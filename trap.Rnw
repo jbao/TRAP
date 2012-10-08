@@ -1,0 +1,1128 @@
+% $Id: hdf.Rnw 336 2012-09-19 08:45:51Z jbao $
+
+\documentclass[a4paper]{article}
+
+\usepackage{graphicx,subfig}
+\usepackage{pdfpages}
+\usepackage{amsmath}
+\usepackage[margin=1in]{geometry}
+\usepackage{longtable}
+\usepackage{color, colortbl}
+\definecolor{Gray}{gray}{0.9}
+
+\DeclareMathOperator{\erf}{erf}
+\DeclareMathOperator{\IQR}{IQR}
+\everymath{\displaystyle}
+
+\renewcommand{\thesubfigure}{\Alph{subfigure}}
+\mathchardef\mhyphen="2D
+
+\newenvironment{narrow}[2]{%
+  \begin{list}{}{%
+  \setlength{\topsep}{0pt}%
+  \setlength{\leftmargin}{#1}%
+  \setlength{\rightmargin}{#2}%
+  \setlength{\listparindent}{\parindent}%
+  \setlength{\itemindent}{\parindent}%
+  \setlength{\parsep}{\parskip}}%
+\item[]}{\end{list}}
+
+\title{Cytokine/receptor mRNA expression levels in HDF}
+\author{Jie Bao}
+
+\begin{document}
+
+\maketitle
+
+<<label=base,echo=False,fig=FALSE>>=
+library(evd)
+library(ggplot2)
+library(reshape)
+library(Biostrings)
+library(org.Hs.eg.db)
+library(doMC)
+library(devtools)
+load_all('~/tool/util')
+
+registerDoMC(12)
+theme_set(theme_bw(15))
+
+subplot <- function(x, y) viewport(layout.pos.row=x, layout.pos.col=y) 
+vplayout <- function(x, y) {
+    grid.newpage() 
+    pushViewport(viewport(layout=grid.layout(x,y)))
+}
+@
+
+<<label=gev,echo=False,fig=True>>=
+gev.param <- read.delim('~/MicroarrayAnalysis/trunk/trap/transfac.gc0.5.GEV_lin.dat')
+res.cebpd <- read.delim('~/MicroarrayAnalysis/trunk/trap/human_cebpd.trap', header=F)
+#mat <- res$V1[res$V1 %in% gev.param$X.matrix]
+gev.pval <- function(res, mat) { 
+    param <- subset(gev.param, X.matrix==mat)
+    L <- 1000
+    xi <- param$xi0 + param$xi1*log10(L)
+    sig <- param$sig0 + param$sig1*log10(L)
+    mu <- param$mu0 + param$mu1*log10(L)
+    xfit <- seq(-13,2,length=100)
+    yfit <- dgev(xfit, loc=mu, scale=sig, shape=xi)
+    pos <- log10(res$V2[res$V1==mat])
+    pval <- pgev(pos, loc=mu, scale=sig, shape=xi, lower.tail=F)
+    list(xfit=xfit, yfit=yfit, pos=pos, pval=pval)
+}
+res <- gev.pval(res.cebpd, 'V$NFKAPPAB_01')
+df <- data.frame(x=res$xfit, y=res$yfit)
+df.label <- data.frame(x=0,y=0.2,label=sprintf("italic(p)==%.1e",res$pval))
+print(ggplot(df,aes(x,y)) + geom_line() + 
+    geom_vline(xintercept=res$pos,linetype='dashed') +
+    geom_text(data=df.label,aes(x,y,label=label),parse=T) +
+    labs(x=expression(paste(log[10]~'A')), y='Density', 
+        title='V$NFKAPPAB_01 affinity distribution\n')
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=cytokine_trap,echo=False,fig=False,cache=True>>=
+human.cytokine <- read.DNAStringSet('~/data/fimo/human_cytokine.fa')
+refseq2symbol <- function(refseq.str) {
+    all.str <- unlist(strsplit(refseq.str, '_'))
+    refseq <- paste(all.str[1:2], collapse='_')
+    #print(refseq)
+    get(get(refseq,org.Hs.egREFSEQ2EG), org.Hs.egSYMBOL)
+}
+moi <- 'V$CEBPD_Q6'
+cytokine.symbol <- sapply(names(human.cytokine), refseq2symbol)
+
+all.pval <- foreach(i=1:length(human.cytokine), .combine='c') %dopar% {
+    seq.file <- tempfile(tmpdir='/export/work/jbao/data/trap/')
+    res.file <- tempfile(tmpdir='/export/work/jbao/data/trap/')
+    write.XStringSet(human.cytokine[i], seq.file)
+    system(paste('./TRAP /home/sohse/TFP_2012.1_data/dat/matrix.dat',seq.file,'>',
+        res.file))
+    res <- read.delim(res.file, header=F)
+    gev.pval(res, moi)$pval
+}
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=affinity_diff,echo=False,fig=True>>=
+ctrl <- read.delim('~/data/hdf/hdf_ctrl_16091.tsv')
+treated <- read.delim('~/data/hdf/hdf_nhk_16091.tsv')
+ctrl.tpoint <- c(0,2,4,8,12,24)
+treated.tpoint <- c(0,1,2,3,4,6,8,10,12,18,24)
+common <- intersect(ctrl$Gene, cytokine.symbol)
+idx.affinity <- which(cytokine.symbol %in% common)
+idx.diff <- which(ctrl$Gene %in% common)
+core <- cbind(ctrl[idx.diff,-1], treated[idx.diff,-1])
+pval.diff <- apply(core,1,lrtest,ctrl.tpoint,treated.tpoint)
+symbol.diff <- ctrl$Gene[idx.diff]
+pval.affinity <- all.pval[idx.affinity]
+symbol.affinity <- cytokine.symbol[idx.affinity]
+df <- data.frame(affinity=pval.affinity, 
+    diff=pval.diff[match(symbol.affinity,symbol.diff)], label=symbol.affinity)
+print(ggplot(df,aes(-log10(affinity),-log10(diff))) + geom_point() +
+    geom_text(aes(label=label),size=3,hjust=-0.2,alpha=0.3) +
+    xlim(0.5,3) +
+    labs(title='CEBPD target genes\n')
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=affinity_upregulation,echo=False,fig=True>>=
+cytokine.sig <- unique(df$label[df$diff<0.05])
+#treated <- list(dat=treated[match(cytokine.sig,treated$Gene),], cond='NHK', 
+#    tpoint=treated.tpoint)
+#df <- plot.logistic(treated, '~/data/hdf/hdf-cytokine_logistic.pdf')
+idx.treated <- which(names(treated)=='Gene')
+fit.treated <- apply(treated[match(cytokine.sig,treated$Gene),-idx.treated],1,
+    function(x) fit.logistic(treated.tpoint,x))
+nfit <- 100
+xfit <- seq(0,max(treated.tpoint),length=nfit)
+uptime <- apply(fit.treated,2,function(x)xfit[which.max(abs(diff(x)/diff(xfit)))])
+df.uptime <- melt(uptime)
+df.uptime$Gene <- cytokine.sig
+df.affinity.uptime <- subset(df, diff<0.05)
+df.affinity.uptime$uptime <- df.uptime$value[match(df.affinity.uptime$label,
+    df.uptime$Gene)]
+print(ggplot(df.affinity.uptime,aes(uptime,-log10(affinity))) + geom_point() +
+    geom_text(aes(label=label),size=3,hjust=-0.2,alpha=0.3) +
+    xlim(0,15) +
+    labs(title='CEBPD target genes\n')
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=matrix_scan,echo=False,fig=True>>=
+pval.cebpd <- res.cebpd[res.cebpd$V1 %in% gev.param$X.matrix,]
+idx <- match(pval.cebpd$V1, gev.param$X.matrix)
+L <- 1000
+pval.cebpd$xi <- gev.param$xi0[idx] + gev.param$xi1[idx]*log10(L)
+pval.cebpd$sig <- gev.param$sig0[idx] + gev.param$sig1[idx]*log10(L)
+pval.cebpd$mu <- gev.param$mu0[idx] + gev.param$mu1[idx]*log10(L)
+#pval.cebpd$pval <- ddply(pval.cebpd, .(V1), function(x) pgev(log10(x$V2), 
+#    loc=x$mu, scale=x$sig, shape=x$xi, lower.tail=F))$V1
+pval.cebpd$pval <- foreach(i=1:nrow(pval.cebpd), .combine='c') %dopar% {
+    pgev(log10(pval.cebpd$V2[i]), loc=pval.cebpd$mu[i], scale=pval.cebpd$sig[i], 
+        shape=pval.cebpd$xi[i], lower.tail=F)
+}
+
+print(ggplot(pval.cebpd[grep('V\\$',pval.cebpd$V1),],aes(-log10(pval),V4)) + 
+    geom_point() +
+    #geom_text(aes(label=V1),size=3,hjust=-0.2,alpha=0.3) +
+    geom_text(data=pval.cebpd[grep('ATF|NFK',pval.cebpd$V1),],aes(label=V1),
+        size=3,hjust=-0.2,colour='red') +
+    xlim(0,4.5) +
+    labs(x=expression(paste(-log[10]~italic(p),'-value')), 
+        y='Information content', 
+        title='Motifs binding to CEBPD\n')
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=tf_scan,echo=False,fig=False,cache=True,eval=True>>=
+for (tf.seq in dir('~/data/hdf/tf_seq/')) {
+    seq.file <- paste('~/data/hdf/tf_seq/',tf.seq,sep='')
+    res.file <- paste('~/data/hdf/tf_seq/',sub('fa','trap',tf.seq),sep='')
+    system(paste('./TRAP /home/sohse/TFP_2012.1_data/dat/matrix.dat',seq.file,
+        '>',res.file))
+}
+@
+
+%<<label=plot_mfpt,echo=False,fig=True,width=7,height=7,eval=True>>=
+%mfpt <- hppi
+%map <- hppi.map
+%tf.pattern <- c('NFKB','RELA','STAT5B','TEAD1','SREBF1','PAX3','NFAT','IRF',
+%    'FOXJ2','^REL$','CEBP','ZEB1')
+%#tf.pattern <- c('NFE2','IKZF1','JUN','FOS','MAFG','GABPA','E4F1','NFAT',
+%#    'NFKB','IRF1','POU2F1','GATA1','LEF1')
+%#tf.pattern <- c('STAT','FOXJ2','ETV7','ETS','ONECUT','RUNX','NFAT')
+%tf <- unlist(sapply(tf.pattern, function(x) map$idmap$official[grep(x,map$idmap$official)]))
+%regulator <- tapply(unlist(mSigDB),unlist(mSigDB),function(x){names(x)})
+%cytokine <- read.delim('../python/hsa04060.ligand', header=F)$V1
+%
+%dist2tf <- function(receptor, tf, metric) {
+%    tf.idx <- which(tf == map$idmap$official)
+%    receptor.idx <- grep(receptor, map$idmap$official)
+%
+%    if (metric == 'mfpt')
+%        return(sapply(receptor.idx, function(x) mfpt$mfpt[x,tf.idx]))
+%    else if (metric == 'sp')
+%        return(sapply(receptor.idx, function(x) mfpt$sp[x,tf.idx]))
+%}
+%il1r.dist <- sapply(tf, function(x) dist2tf('IL1R[1-2]',x,'mfpt'))
+%tnfr.dist <- sapply(tf, function(x) dist2tf('TNFR',x,'mfpt'))
+%il1r.dist <- il1r.dist[apply(il1r.dist,1,function(x)all(x!=-1)),]
+%tnfr.dist <- tnfr.dist[apply(tnfr.dist,1,function(x)all(x!=-1)),]
+%#tf.dist <- Re((tf.dist - apply(tf.dist,2,median)) / 
+%#    (apply(tf.dist,2,IQR)/(2*sqrt(2)*erfc(0.5))))
+%df <- data.frame(IL1R=colMeans(il1r.dist), TNFR=colMeans(tnfr.dist), tf=tf)
+%
+%print(ggplot(df,aes(IL1R,TNFR)) + geom_point() +
+%    geom_abline(aes(intercept=0,slope=1),colour='blue',linetype='dashed') +
+%    geom_text(aes(label=tf),size=3,hjust=-0.2,alpha=0.3) + 
+%    xlim(9.6,10.4) + ylim(9.6,10.4) +
+%    #xlim(9.9,10.4) +
+%    opts(title='MFPT to TFs\n')
+%)
+%@
+
+% ----------------------------------------------------------------------------
+
+<<label=tf_network,echo=False,fig=False,eval=True>>=
+tf.symbol <- 'IRF_|IRF7|CEBPD|EMX2|MEF2D|NFE2|NFK|RELB|RUNX1|STAT[134]'
+idx <- grep(tf.symbol, gev.param$X.matrix)
+L <- 1000
+all <- NULL
+for (res.file in dir('~/data/hdf/tf_seq/','*.trap')) {
+    res <- read.delim(paste('~/data/hdf/tf_seq/',res.file,sep=''), header=F)
+    df <- subset(res, V1 %in% gev.param$X.matrix[idx])
+    df$xi <- gev.param$xi0[idx] + gev.param$xi1[idx]*log10(L)
+    df$sig <- gev.param$sig0[idx] + gev.param$sig1[idx]*log10(L)
+    df$mu <- gev.param$mu0[idx] + gev.param$mu1[idx]*log10(L)
+    df$pval <- rep(0,nrow(df))
+    for (i in 1:nrow(df)) {
+        df$pval[i] <- pgev(log10(df$V2[i]), loc=df$mu[i], scale=df$sig[i],
+            shape=df$xi[i], lower.tail=F)
+    }
+    df$tf <- sub('.trap', '', res.file)
+    all <- rbind(all, df)
+}
+
+pdf('~/data/hdf/hdf-tf_scan.pdf',8,11)
+unique.tf <- levels(factor(all$tf))
+for (i in 1:ceiling(length(unique.tf)/12)) {
+    slice <- seq((i-1)*12+1,i*12)
+    slice <- slice[!(slice > length(unique.tf))]
+    current <- subset(all, tf %in% unique.tf[slice])
+    print(ggplot(current,aes(-log10(pval),V4)) + 
+        geom_point() +
+        facet_wrap(~tf,ncol=3) +
+        geom_text(aes(label=V1),size=2,hjust=-0.1,alpha=0.3) +
+        #geom_text(data=pval.cebpd[grep('ATF|NFK',pval.cebpd$V1),],aes(label=V1),
+        #    size=3,hjust=-0.2,colour='red') +
+        xlim(0,6) +
+        labs(x=expression(paste(-log[10]~italic(p),'-value')), 
+            y='Information content', 
+            title='Motifs binding to CEBPD\n')
+    )
+}
+dev.off()
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=tf_skewt,echo=False,fig=False,cache=True,eval=False>>=
+tf <- read.delim('~/data/tf/tf_table_final.csv', sep=';')
+sig.tf <- foreach(i=2:ncol(diff), .combine='c') %dopar% {
+    fit <- st.mle(y=diff[,i])
+    pval <- 1 - pst(diff[,i], dp=fit$dp)
+    list(rownames(diff)[pval<0.01 & rownames(diff) %in% tf$Gene_Abbrev])
+}
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=tfbs_sig,echo=False,fig=False,cache=True,eval=False>>=
+#tfbs.entrez <- list(t2=c('ZEB1','NFKB','TF65'),t3=c('NFKB','TF65'),
+#    t4=c('NFKB','TF65','IRF'),t5=c('CEBP','IRF','NFKB','TF65','NFAT'),
+#    t6=c('CEBP','IRF','NFKB','TF65','NFAT'),
+#    t7=c('ZEB1','CEBP','IRF','NFKB','TF65','NFAT'),
+#    t8=c('ZEB1','CEBP','IRF','NFKB','TF65','NFAT'),
+#    t9=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','FOXJ2','SREBF1','STAT5B'),
+#    t10=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','FOXJ2','SREBF1','STAT5B','^REL$'),
+#    t11=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','FOXJ2','SREBF1','STAT5B','^REL$'),
+#    t12=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
+#    t13=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
+#    t14=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
+#    t15=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
+#    t16=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
+#    t17=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
+#    t18=c('PAX3','CEBP','IRF','NFKB','TF65','SREBF1','STAT5B','^REL$'),
+#    t19=c('PAX3','CEBP','IRF','NFKB','TF65','SREBF1','STAT5B','^REL$'),
+#    t20=c('PAX3','CEBP','IRF','NFKB','TF65','SREBF1','STAT5B','^REL$'),
+#    t21=c('CEBP','IRF','NFKB','TF65','STAT5B'),
+#    t22=c('CEBP','IRF','NFKB','TF65','STAT5B'),
+#    t23=c('IRF','NFKB','TF65'),
+#    t24=c('IRF','NFKB','TF65')
+#    )
+tf.interesting <- list(tf=c('CEBPD','RELB'))
+tpoint <- 1:24
+tf.entrez <- NULL
+for (i in 1:length(tf.interesting)) {
+    tf <- unlist(sapply(tf.interesting[[i]], function(x) hippie.map$idmap$official[grep(x,hippie.map$idmap$official)]))
+    tf.entrez <- rbind(tf.entrez, data.frame(tf.entrez=hippie.map$idmap$entrez[match(tf,hippie.map$idmap$official)],time=paste(tpoint[i],'h')))
+}
+receptor <- read.delim('~/MicroarrayAnalysis/trunk/python/hsa04060.receptor', 
+    header=F)$V1
+receptor.entrez <- unlist(mget(as.character(receptor), org.Hs.egSYMBOL2EG, 
+    ifnotfound=NA))
+receptor.entrez <- receptor.entrez[receptor.entrez %in% hippie.map$idmap$entrez]
+tf.entrez <- tf.entrez[tf.entrez$tf.entrez %in% hippie.map$idmap$entrez,]
+#mfpt.sp <- NULL
+mfpt.sp <- foreach(i=1:length(receptor.entrez), .combine='rbind') %:%
+    foreach(j=1:nrow(tf.entrez), .combine='rbind') %dopar% {
+#for (i in 1:10) {
+#    for (j in 1:10) {
+        ii <- hippie.map$idmap$vertex[which(receptor.entrez[i] == hippie.map$idmap$entrez)] + 1
+        jj <- hippie.map$idmap$vertex[which(tf.entrez$tf.entrez[j] == hippie.map$idmap$entrez)] + 1
+        receptor.idx <- match(receptor.entrez[i], V(hippie.net)$gene)
+        tf.idx <- match(tf.entrez$tf.entrez[j], V(hippie.net)$gene)
+        sp <- shortest.paths(hippie.net, receptor.idx, tf.idx, weights=NA) # BFS
+        data.frame(mfpt=hippie$mfpt[ii,jj], sp=as.numeric(sp),
+            receptor=get(receptor.entrez[i], org.Hs.egSYMBOL),
+            tf=hippie.map$idmap$official[which(tf.entrez$tf.entrez[j]==hippie.map$idmap$entrez)], time=tf.entrez$time[j])
+    #}
+}
+@
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\centering
+%<<label=top_mfpt,echo=False,fig=True,eval=True,width=8,height=5>>=
+%#sp.reduced <- read.delim('~/data/network/hppi/hppi_reduced_sp.tsv', header=F)
+%#get.mfpt <- function(source, target) {
+%#    if (source %in% hippie.map$idmap$entrez & target %in% hippie.map$idmap$entrez) {
+%#        source.idx <- hippie.map$idmap$vertex[which(source==hippie.map$idmap$entrez)] + 1
+%#        target.idx <- hippie.map$idmap$vertex[which(target==hippie.map$idmap$entrez)] + 1
+%#        res <- hippie$mfpt[source.idx, target.idx]
+%#    } else {
+%#        res <- NA
+%#    }
+%#    return(res)
+%#}
+%#sp.reduced$receptor.entrez <- unlist(mget(as.character(sp.reduced$V1), org.Hs.egSYMBOL2EG))
+%#sp.reduced$tf.entrez <- unlist(mget(as.character(sp.reduced$V2), org.Hs.egSYMBOL2EG))
+%#sp.reduced$mfpt <- apply(sp.reduced, 1, function(x) get.mfpt(x[4],x[5]))
+%#sp.reduced$group <- 'Other'
+%#sp.reduced$group[grep('STAT',sp.reduced$V2)] <- 'STAT'
+%#sp.reduced$group[grep('NFK',sp.reduced$V2)] <- 'NFKB'
+%#sp.reduced$group[grep('RELA',sp.reduced$V2)] <- 'NFKB'
+%#sp.reduced$group[grep('CEBP',sp.reduced$V2)] <- 'CEBP'
+%#sp.reduced <- within(sp.reduced, group <- factor(group, 
+%#    levels = c('NFKB','CEBP','STAT','Other')))
+%#with(sp.reduced, levels(group))
+%#df.label <- ddply(sp.reduced, .(V2), function(x) x[which.min(x$mfpt),])
+%#stop()
+%#sp.reduced <- sp.reduced[!is.na(sp.reduced$mfpt),]
+%df <- NULL
+%for (t in levels(mfpt.sp$time)) {
+%    current <- subset(mfpt.sp, time==t)
+%    res <- ddply(current, .(receptor), summarise, mean.mfpt=mean(mfpt), 
+%        mean.sp=mean(sp))
+%    res$time <- t
+%    df <- rbind(df, res)
+%}
+%#df <- within(df, group <- factor(group, 
+%#    levels = c('NFKB','CEBP','STAT','Other')))
+%#with(df, levels(group))
+%#sp.reduced <- sp.reduced[sp.reduced$group=='NFKB'|sp.reduced$group=='CEBP',]
+%#sp.reduced <- sp.reduced[sp.reduced$group=='NFKB',]
+%#df <- ddply(sp.reduced, .(V1), summarise, mean.mfpt=mean(mfpt), mean.sp=mean(V3))
+%#df <- df[grep('IL1R|IL6|TNF',df$V1),]
+%group <- sub('IL1R.+','IL1R',df$receptor)
+%group <- sub('TNFR.+','TNFR',group)
+%df$group <- group
+%df2 <- NULL
+%for (t in levels(factor(df$time))) {
+%    current <- subset(df, time==t)
+%    res <- ddply(current, .(group), summarise, mean.mfpt=mean(mean.mfpt),
+%        mean.sp=mean(mean.sp))
+%    res$time <- t
+%    df2 <- rbind(df2, res)
+%}
+%inv.norm <- function(df) {
+%    df$inv.mfpt <- (max(df$mean.mfpt)-df$mean.mfpt) / (max(df$mean.mfpt)-
+%        min(df$mean.mfpt))
+%    df$inv.sp <- (max(df$mean.sp)-df$mean.sp) / (max(df$mean.sp)-
+%        min(df$mean.sp))
+%    #df$inv.mfpt <- (max(df$mfpt)-df$mfpt) / (max(df$mfpt)-min(df$mfpt))
+%    #df$inv.sp <- (max(df$sp)-df$sp) / (max(df$sp)-min(df$sp))
+%    df
+%}
+%df3 <- ddply(df2, .(time), inv.norm)
+%df4 <- ddply(df3, .(time), function(x) x[order(x$inv.mfpt,decreasing=T),])
+%#tpoint <- c(2,3,4,6,8,10,12,18,24)
+%df4 <- within(df4, time <- factor(time, 
+%    levels = paste(tpoint,'h')))
+%with(df4, levels(time))
+%df4$type <- '0'
+%df4$type[grep('EDA2R',df4$group)] <- '1'
+%df4$type[grep('IFNGR1',df4$group)] <- '2'
+%df4$type[grep('IFNAR2',df4$group)] <- '3'
+%#tmp <- ddply(df, .(group), 'nrow')
+%#df <- ddply(df, .(group), summarise, mean.mfpt=mean(mean.mfpt)) 
+%#    mean.sp=mean(mean.sp))
+%#df$size <- tmp$nrow
+%
+%#theme_set(theme_bw(10))
+%#print(ggplot(df4,aes(group,0,colour=type)) + #geom_point() +
+%#    scale_colour_manual(values=c('black','red','blue','green')) +
+%#    geom_segment(aes(xend=group,yend=inv.mfpt)) + coord_polar() +
+%#    facet_wrap(~time,scales='free_x') +
+%#    #geom_text(aes(label=V1),hjust=-0.2,alpha=0.3,size=2) +
+%#    xlab('') + 
+%#    #ylab('Normalized inverse MFPT') +
+%#    ylab('Normalized inverse shortest path') +
+%#    #ylim(0,1.1) #+
+%#    opts(axis.text.x=theme_text(size=4),legend.position='none')
+%#)
+%mfpt <- NULL
+%sp <- NULL
+%for (t in levels(mfpt.sp$tf)) {
+%    current <- subset(mfpt.sp, tf==t)
+%    mfpt.z <- Re((current$mfpt - median(current$mfpt)) / (IQR(current$mfpt)
+%        /(2*sqrt(2)*erfc(0.5))))
+%    sp.z <- Re((current$sp - median(current$sp)) / (IQR(current$sp)
+%        /(2*sqrt(2)*erfc(0.5))))
+%    mfpt <- cbind(mfpt, mfpt.z)
+%    sp <- cbind(sp, sp.z)
+%}
+%mfpt <- as.data.frame(mfpt)
+%names(mfpt) <- levels(mfpt.sp$tf)
+%mfpt$receptor <- current$receptor
+%mfpt$metric <- 'MFPT'
+%sp <- as.data.frame(sp)
+%names(sp) <- levels(mfpt.sp$tf)
+%sp$receptor <- current$receptor
+%sp$metric <- 'SP'
+%print(ggplot(rbind(mfpt,sp),aes(CEBPD,RELB)) + geom_point() +
+%    #scale_colour_manual(values=c('black','red','blue','green')) +
+%    #geom_segment(aes(xend=receptor,yend=mfpt.z)) + coord_polar() +
+%    #geom_bar() +
+%    facet_wrap(~metric,scales='free_x') +
+%    geom_text(aes(label=receptor),hjust=-0.2,alpha=0.3,size=2) +
+%    geom_abline(intercept=0,slope=1,colour='red',linetype='dashed') +
+%    xlab('CEBPD') + ylab('RELB') +
+%    #ylab('Normalized inverse MFPT') +
+%    #ylab('Normalized inverse shortest path') +
+%    xlim(-35,15) #+
+%    #opts(axis.text.x=theme_text(size=4),legend.position='none')
+%)
+%@
+%\caption{Example of the differential time series analysis using the 
+%full/reduced model fitting (Mar and Quackenbush \emph{PLoS Comput Biol} 2009). 
+%Gene expression time course from 2 conditions
+%are fitted with a cubic polynomial either together (reduced model, dot-dashed 
+%line) or separately (full model, dashed line). The deviances of the 2 model 
+%fits are compared using the ANOVA test and a $p\mhyphen$value is generated,
+%which compares the goodness-of-fit of both model fits and 
+%implies the probability that this gene is differentially expressed under
+%the 2 given conditions (equivalent to the alternative hypothesis that
+%the full model fits the data better).}
+%\label{fig:fit_ex}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+<<label=plot_tfbs,echo=False,fig=True,width=10,height=8,eval=False>>=
+#mycolor <- topo.colors(128)
+mycolor <- gray.colors(128,0.9,0)
+truncated <- sub('.*V\\$','',tfbs$common)
+df <- as.data.frame(tfbs$final[order(truncated),])
+names(df) <- paste(1:24,'h',sep='')
+df$TFBS <- tfbs$common[order(truncated)]
+df$group <- 'Other'
+df$group[grep('STAT',df$TFBS)] <- 'STAT'
+df$group[grep('NFK',df$TFBS)] <- 'NFKB'
+df$group[grep('RELA',df$TFBS)] <- 'NFKB'
+df$group[grep('CEBP',df$TFBS)] <- 'CEBP'
+df <- melt(df, id.vars=c('TFBS','group'))
+df <- within(df, TFBS <- factor(TFBS, levels = tfbs$common[order(truncated)]))
+with(df, levels(TFBS))
+df <- within(df, group <- factor(group, levels = c('NFKB','CEBP','STAT','Other')))
+with(df, levels(group))
+df$time <- rep(1:24, each=length(tfbs$common))
+print(ggplot(df,aes(variable,TFBS)) + geom_tile(aes(fill=-log10(value))) +
+    scale_fill_gradientn(colours=mycolor) +
+    guides(fill = guide_colorbar(barwidth = 0.5, barheight = 10, title.hjust=2.2,
+        title=expression(paste(-log[10],italic(p),'-value')))) +
+    labs(x = "",y = "") + scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    opts(axis.ticks = theme_blank(),axis.text.x=theme_text(angle=90),
+        panel.border=theme_blank(),legend.title=theme_text(angle=90))
+)
+
+#print(ggplot(df,aes(time,-log10(value),group=TFBS)) + 
+#    geom_point() + geom_line() +
+#    facet_wrap(~group) +
+#    scale_colour_brewer('',palette='Set1') +
+#    xlab('time (h)') + ylab(expression(paste(-log[10],' ',italic(p),'-value'))) +
+#    opts(legend.position='none',legend.key=theme_blank(),
+#        title='Transcription factor target enrichment\n')
+#)
+
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=pval,echo=False,fig=False,cache=True,eval=False>>=
+core <- cbind(ctrl[,-1],treated[,-1])
+pval <- apply(core,1,lrtest)
+qval <- p.adjust(pval, 'BH')
+@
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\centering
+%<<label=fit_ex,echo=False,fig=True,eval=True,width=8,height=4>>=
+%#idx <- symbol == 'CEBPD'
+%idx <- grep('CEBPD|RELB|BHLHB5', symbol)
+%ctrl$cond <- 'Control'
+%treated$cond <- 'NHK medium'
+%df.ctrl <- melt(ctrl[idx,], id.vars=c('Gene','cond'))
+%df.ctrl$time <- rep(ctrl.tpoint, each=length(idx))
+%df.treated <- melt(treated[idx,], id.vars=c('Gene','cond'))
+%df.treated$time <- rep(treated.tpoint, each=length(idx))
+%df <- rbind(df.ctrl, df.treated)
+%df <- within(df, cond <- factor(cond, levels = c('NHK medium','Control')))
+%with(df, levels(cond))
+%
+%# full/reduced model fit
+%core <- cbind(ctrl[idx,2:(length(ctrl.tpoint)+1)],treated[idx,2:(length(treated.tpoint)+1)])
+%red <- apply(core,1,fit.red)
+%fit.reduced <- as.data.frame(red[1:length(ctrl.tpoint),])
+%names(fit.reduced) <- symbol[idx]
+%full <- apply(core,1,fit.full)
+%fit.ctrl <- as.data.frame(full[1:length(ctrl.tpoint),])
+%names(fit.ctrl) <- symbol[idx]
+%fit.treated <- as.data.frame(full[-(1:length(ctrl.tpoint)),])
+%names(fit.treated) <- symbol[idx]
+%
+%df.param <- apply(cbind(ctrl[idx,2:(length(ctrl.tpoint)+1)],
+%    treated[idx,2:(length(treated.tpoint)+1)]),1,lrtest)
+%#stop()
+%df.param <- melt(df.param)
+%df.param <- transform(df.param, Gene=symbol[idx], 
+%    label=sprintf("italic(p)==%.1e",df.param$value))
+%
+%fit.reduced <- transform(fit.reduced, time=ctrl.tpoint)
+%fit.reduced <- melt(fit.reduced, id.vars='time')
+%fit.reduced <- transform(fit.reduced, Gene=rep(symbol[idx],each=length(ctrl.tpoint)))
+%
+%fit.ctrl <- transform(fit.ctrl, time=ctrl.tpoint)
+%fit.ctrl <- melt(fit.ctrl, id.vars='time')
+%fit.ctrl <- transform(fit.ctrl, Gene=rep(symbol[idx],each=length(ctrl.tpoint)))
+%
+%fit.treated <- transform(fit.treated, time=treated.tpoint)
+%fit.treated <- melt(fit.treated, id.vars='time')
+%fit.treated <- transform(fit.treated, Gene=rep(symbol[idx],each=length(treated.tpoint)))
+%
+%p <- ggplot(df, aes(time,value)) + geom_point(aes(colour=cond)) + 
+%    geom_line(aes(colour=cond)) + 
+%    facet_wrap(~Gene) +
+%    geom_line(data=fit.reduced,aes(time,value),alpha=0.2,linetype='dotdash') +
+%    geom_line(data=fit.ctrl,aes(time,value),alpha=0.2,linetype='dashed') +
+%    geom_line(data=fit.treated,aes(time,value),alpha=0.2,linetype='dashed') +
+%    geom_text(data=df.param, aes(x=4.5,y=4.5,label=label),size=5,parse=T) +
+%    scale_colour_brewer('',palette='Set1') +
+%    xlab('Time (h)') + ylab(expression(paste(log[2],' fold expression'))) 
+%print(p+opts(legend.position=c(0.9,0.9),legend.key=theme_blank()))
+%    #title='CEBPD\n'))
+%@
+%\caption{Example of the differential time series analysis using the 
+%full/reduced model fitting (Mar and Quackenbush \emph{PLoS Comput Biol} 2009). 
+%Gene expression time course from 2 conditions
+%are fitted with a cubic polynomial either together (reduced model, dot-dashed 
+%line) or separately (full model, dashed line). The deviances of the 2 model 
+%fits are compared using the ANOVA test and a $p\mhyphen$value is generated,
+%which compares the goodness-of-fit of both model fits and 
+%implies the probability that this gene is differentially expressed under
+%the 2 given conditions (equivalent to the alternative hypothesis that
+%the full model fits the data better).}
+%\label{fig:fit_ex}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=pval_hist,echo=False,fig=True>>=
+%#core <- cbind(ctrl[,-1],treated[,-1])
+%#pval <- apply(core,1,lrtest)
+%pval <- read.delim('~/data/hdf/mds/pval_hdf_nhk_16091.dat', header=F)$V1
+%qval <- p.adjust(pval, 'BH')
+%res <- hist(-log10(qval), plot=F)
+%df <- data.frame(x=res$mids, y=res$counts, type='q-value')
+%
+%print(ggplot(df,aes(x,y)) + 
+%    geom_bar(stat='identity',fill='gray',colour='black') +
+%    #xlab(expression(paste(-log[10],' ',italic(q),'-value','\n'))) + 
+%    xlab('MDS-based response metric') +
+%    ylab('count') +
+%    opts(title='MDS')
+%)
+%@
+%\end{center}
+%\caption{Histogram of the $-\log_{10}$ transformed and multiple testing 
+%corrected (Benjamini-Hochberg) $p\mhyphen$values according
+%to a analysis of deviance test of the full/reduced model fit of the time series.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+<<label=tf_volcano,echo=False,fig=False,eval=False>>=
+ctrl <- read.delim('~/data/hdf/hdf_ctrl_16091.tsv')
+treated <- read.delim('~/data/hdf/hdf_nhk_16091.tsv')
+diff <- read.delim('~/data/hdf/hdf_diff_16091.tsv')
+
+tf <- read.delim('~/data/tf/tf_table_final.csv', sep=';')
+goi <- tf$Gene_Abbrev
+genes <- tf$Class
+#goi <- c('^IL[0-9]+$','^TNF[^R]','^CXCL','^CCL')
+#genes <- c('ILs','TNFs','CXCLs','CCLs')
+ctrl.tpoint <- c(0,2,4,8,12,24)
+treated.tpoint <- c(0,1,2,3,4,6,8,10,12,18,24)
+diff.tpoint <- 0:24
+plot.ts <- function(goi, genes) {
+    df <- NULL
+    for (i in 1:length(goi)) {
+        idx <- grep(goi[i],ctrl$Gene)
+        tmp <- data.frame(tp=ctrl.tpoint,mean=colMeans(ctrl[idx,-1]),
+            sd=apply(ctrl[idx,-1],2,sd),gene=rep(genes[i],length(ctrl.tpoint)),
+            cond=rep('Control',length(ctrl.tpoint)))
+        df <- rbind(df,tmp)
+        tmp <- data.frame(tp=treated.tpoint,mean=colMeans(treated[idx,-1]),
+            sd=apply(treated[idx,-1],2,sd),gene=rep(genes[i],length(treated.tpoint)),
+            cond=rep('NHK',length(treated.tpoint)))
+        df <- rbind(df,tmp)
+    }
+    df <- within(df, cond <- factor(cond, levels = c('Control','NHK')))
+    with(df, levels(cond))
+    print(ggplot(df,aes(tp,mean)) + 
+        geom_ribbon(aes(ymin=mean-sd,ymax=mean+sd),fill='gray',colour='gray') + 
+        geom_point() + scale_colour_brewer(palette='Set1') +
+        geom_line(aes(colour=cond)) + 
+        facet_grid(cond~gene) + xlab('\nTime (h)') + 
+        #ylim(-1,3) +
+        ylab(expression(paste(log[2],' fold expression','\n'))) +
+        opts(title='Gene expression time course of HDF\n',legend.position='none')
+    )
+}
+
+plot.pval <- function(goi, genes) {
+    df <- NULL
+    for (i in 1:length(goi)) {
+        idx <- grep(goi[i],ctrl$Gene)
+        core <- cbind(ctrl[idx,-1], treated[idx,-1])
+        pval <- apply(core,1,lrtest)
+        df <- rbind(df, data.frame(pval=pval,gene=ctrl$Gene[idx],group=genes[i],pos=i))
+    }
+   
+    jitter <- runif(nrow(df),-0.2,0.2)
+    print(ggplot(df,aes(group,-log10(pval))) + 
+        geom_boxplot(width=0.5,outlier.colour='white') + 
+        geom_point(aes(pos+jitter,-log10(pval))) +
+        #scale_x_discrete(breaks=1:length(goi),labels=genes) +
+        geom_text(aes(pos+jitter,-log10(pval),label=gene),size=3,hjust=-0.2,alpha=0.3) + 
+        xlab('') + ylab(expression(paste(-log[10],' ',italic(p),'-value','\n'))) +
+        opts(title='Gene expression time course of HDF\n',legend.position='none')
+    )
+    df
+}
+
+#source('stat-ellipse.R')
+plot.tf.pval <- function() {
+    idx <- match(goi, ctrl$Gene)
+    cat <- genes[!is.na(idx)]
+    idx <- na.omit(idx)
+    core <- cbind(ctrl[idx,-1], treated[idx,-1])
+    pval <- apply(core,1,lrtest)
+    qval <- p.adjust(pval, 'BH')
+    diff <- rowMeans(diff[idx,-1])
+    df <- data.frame(qval=qval,gene=ctrl$Gene[idx],group=cat,diff=diff)
+    
+    pdf('~/data/hdf/hdf-tf_volcano.pdf',8,11)
+    group.level <- levels(factor(df$group))
+    get.contour <- function(df) {
+        z <- kde2d(df$diff, -log10(df$qval), n=50)
+        data.frame(x=rep(z$x,50), y=rep(z$y,each=50), z=melt(z$z)$value, 
+            group=df$group[1])
+    }
+    for (i in 1:ceiling(length(group.level)/12)) {
+    #for (i in 1:4) {
+        slice <- seq((i-1)*12+1,i*12)
+        slice <- slice[!(slice > length(group.level))]
+        current <- group.level[slice]
+        to.plot <- subset(df, group %in% current)
+        #contour.data <- ddply(to.plot, .(group), get.contour)
+        
+        #calculating ellipses
+        library(ellipse)
+        df.ell <- data.frame()
+        for (g in levels(factor(to.plot$group))) {
+            current.data <- subset(to.plot, group==g)
+            current.df <- as.data.frame(ellipse(cor(current.data$diff,
+                -log10(current.data$qval)),
+                scale=c(sd(current.data$diff),sd(-log10(current.data$qval))),
+                centre=c(mean(current.data$diff),mean(-log10(current.data$qval)))))
+            current.df$group <- g
+            df.ell <- rbind(df.ell, current.df)
+        }
+
+        print(ggplot(to.plot,aes(diff,-log10(qval))) + 
+            facet_wrap(~group,ncol=3) + #stat_ellipse() + 
+            geom_point() +
+            geom_text(aes(label=gene),size=3,hjust=-0.2) +
+            #geom_contour(data=contour.data,aes(x,y,z=z),bins=3) +
+            geom_path(data=df.ell, aes(x=x, y=y), colour='blue') +
+            geom_vline(aes(xintercept=0),colour='gray',linetype='dashed') +
+            geom_hline(aes(yintercept=-log10(0.05)),colour='red',linetype='dashed') +
+            xlim(-1,4) + ylim(-1,5)
+        )
+    }
+    dev.off()
+    df
+}
+
+#df <- plot.tf.pval()
+@
+%\end{center}
+%\caption{Time course of 4 different groups of cytokines. The average
+%time-resolved expression profiles of 4 different groups of cytokines
+%are plotted for control and the NHK conditioned medium case. Gray area 
+%indicates one times standard deviation.}
+%\caption{}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+<<label=tf_ts,echo=False,fig=True,eval=False>>=
+idx <- na.omit(match(tf$Gene_Abbrev,treated$Gene))
+#stop()
+core <- cbind(ctrl[idx,-1], treated[idx,-1])
+pval <- apply(core,1,lrtest)
+qval <- p.adjust(pval, 'BH')
+#diff <- rowMeans(diff[idx,-1])
+#df <- data.frame(qval=qval,gene=ctrl$Gene[idx],diff=diff)
+tf.ts <- treated[idx,]
+#treated <- list(dat=tf.ts[qval<0.05,], cond='NHK', tpoint=treated.tpoint)
+#df <- plot.impulse(treated, '~/data/hdf/hdf-tf_impulse.pdf')
+df <- tf.ts[qval<0.05,]
+#mat <- matrix(0,nrow(df),nrow(df))
+#for (i in 1:nrow(df)) {
+#    for (j in i:nrow(df)) {
+#        #mat[i,j] <- dtw(df[i,-1], df[j,-1])$normalizedDistance
+#        mat[i,j] <- dtw(df[i,-1], df[j,-1])$distance
+#        mat[j,i] <- mat[i,j]
+#    }
+#}
+#hc <- hclust(as.dist(mat))
+#df$cluster <- as.character(cutree(hc, 3))
+cl <- kmeans(df[,-1], 3, nstart=100)
+df$cluster <- factor(cl$cluster)
+
+mdf <- melt(df, id.vars=c('Gene','cluster'))
+mdf$variable <- rep(treated.tpoint, each=nrow(df))
+
+print(ggplot(mdf,aes(variable,value,group=Gene,colour=cluster)) + geom_point() + 
+    geom_line() + scale_colour_brewer(palette='Set1') +
+    xlab('Time (h)') + ylab(expression(paste(log[2]~'fold expression'))) +
+    opts(title='TF expression (NHK-conditioned medium)\n',
+        legend.position='none')
+)
+
+#print(ggplot(df,aes(diff,-log10(qval))) + 
+#    geom_point() +
+#    geom_text(aes(label=gene),size=3,hjust=-0.2,alpha=0.3) +
+#    #geom_contour(data=contour.data,aes(x,y,z=z),bins=3) +
+#    #geom_path(data=df.ell, aes(x=x, y=y), colour='blue') +
+#    geom_vline(aes(xintercept=0),colour='gray',linetype='dashed',size=1) +
+#    #geom_hline(aes(yintercept=-log10(0.05)),colour='red',linetype='dashed',size=1) +
+#    xlim(-3,3) + #ylim(-1,5) +
+#    xlab(expression(paste('Average'~log[2]~'fold change (NHK - control)'))) + 
+#    ylab(expression(paste(-log[10]~italic(q),'-value'))) +
+#    opts(title='TF differential expression over time\n')
+#)
+@
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=pval_cytokine,echo=False,fig=True,width=8,height=5>>=
+%df.cytokine <- plot.pval(goi, genes)
+%@
+%\end{center}
+%%\caption{Time course of 4 different groups of cytokine receptors. The average
+%%time-resolved expression profiles of 4 different groups of cytokine receptors
+%%are plotted for control and the NHK conditioned medium case. Gray area 
+%%indicates one times standard deviation.}
+%\caption{}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=ts_receptor,echo=False,fig=True,width=8,height=5>>=
+%goi <- c('^IL[0-9]+R','^TNFR','^CXCR','^CCR')
+%genes <- c('IL-Rs','TNFRs','CXCRs','CCRs')
+%plot.ts(goi, genes)
+%@
+%\end{center}
+%\caption{Time course of 4 different groups of cytokine receptors. The average
+%time-resolved expression profiles of 4 different groups of cytokine receptors
+%are plotted for control and the NHK conditioned medium case. Gray area 
+%indicates one times standard deviation.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=pval_receptor,echo=False,fig=True,width=8,height=5>>=
+%df.receptor <- plot.pval(goi, genes)
+%@
+%\end{center}
+%\caption{Control and NHK-conditioned time series were fitted with a 
+%full/reduced cubic polynomial model. Analysis of deviance of the model fit
+%was then performed to judge whether the control and NHK-conditioned time
+%series can be explained by a single fit. The higher the negative 
+%log-transformed $p\mhyphen$value, the more significant the analysis of 
+%deviance test is and thus the more likely that NHK-conditioned expression
+%profile deviates from the control.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=fitstat,echo=False,fig=True>>=
+%library(qvalue)
+%pval <- melt(apply(treated[,-1],1,gof))
+%qval <- p.adjust(pval$value, 'BH')
+%qres <- hist(-log10(qval), plot=F)
+%#pres <- hist(-log10(qval$pvalues), plot=F)
+%df <- data.frame(x=qres$mids, y=qres$counts, type='q-value')
+%#df <- rbind(df, data.frame(x=qres$mids, y=qres$counts, type='q-value'))
+%#df <- data.frame(p=qval$pvalues, q=p.adjust(qval$pvalues,'BH'))
+%
+%print(ggplot(df,aes(x,y)) + 
+%    #geom_point()
+%    geom_bar(stat='identity',fill='gray',colour='black') +
+%    #facet_wrap(~type)
+%    #scale_x_log10() + 
+%    xlab('p-value') + ylab('count')
+%)
+%@
+%\end{center}
+%\caption{Histogram of the $-\log_{10}$ transformed and multiple testing 
+%corrected (Benjamini-Hochberg) $p\mhyphen$values according
+%to a $\chi^2$ goodness-of-fit test of the logistic fit of the time series.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%<<label=tf_cytokine,echo=False,fig=True>>=
+%ligand <- read.delim('~/data/hdf/hdf_nhk_ligand_fit.dat', header=F)$V1
+%tf <- tfbs$common[order(truncated)]
+%
+%pdf('~/data/hdf/hdf-tf_cytokine.pdf',8,11)
+%for (i in 1:2) {
+%    slice <- seq((i-1)*12+1,i*12)
+%    df <- NULL
+%    for (i in 1:length(slice)) {
+%        expr <- diff[,2+slice[i]]
+%        gene.ranked <- diff$Gene[order(expr,decreasing=T)]
+%        for (j in 1:length(tf)) {
+%            target <- eval(parse(text=paste("mSigDB$'",tf[j],"'",sep="")))
+%            df <- rbind(df, data.frame(TF=tf[j],rank=match(target,gene.ranked),
+%                tpoint=paste(slice[i],'h')))
+%        }
+%    }
+%
+%    print(ggplot(df,aes(TF,rank)) + 
+%        geom_point(shape='-') + facet_wrap(~tpoint,ncol=3) +
+%        #xlab('half-maximal time (h)') + #xlim(0,30) +
+%        #ylab('count') +
+%        ylim(0,200) +
+%        opts(title='Logistic fitting gene expression time course of HDF\n')
+%    )
+%}
+%dev.off()
+%@
+
+% ----------------------------------------------------------------------------
+
+<<label=cytokine,echo=False,fig=False,cache=True,eval=False>>=
+ligand <- read.delim('~/data/hdf/hdf_nhk_ligand_fit.dat', header=F)
+receptor <- read.delim('~/data/hdf/hdf_nhk_receptor_fit.dat', header=F)
+df.cytokine <- transform(ligand, type=rep('ligand',nrow(ligand)))
+df.cytokine <- rbind(df.cytokine, transform(receptor, type=rep('receptor',nrow(receptor))))
+g <- rep('Other',nrow(df.cytokine))
+groups <- c('IL/R','TNF/R','CXCL/R','CCL/R')
+group.ligand <- c('^IL[0-9]+[^R]*','TNF[^R]','^CXCL','^CCL')
+for (i in 1:length(group.ligand)) {
+    idx <- grep(group.ligand[i], df.cytokine$V1)
+    g[idx] <- groups[i]
+}
+group.receptor <- c('^IL[0-9]+R','^TNFR','^CXCR','^CCR')
+for (i in 1:length(group.receptor)) {
+    idx <- grep(group.receptor[i], df.cytokine$V1)
+    g[idx] <- groups[i]
+}
+df.cytokine$group <- g
+df.cytokine$qval <- qval[match(df.cytokine$V1,ctrl$Gene)]
+df.cytokine <- within(df.cytokine, group <- factor(group, levels = c(groups,'Other')))
+with(df.cytokine, levels(group))
+@
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=tf_cytokine,echo=False,fig=True,width=8,height=11>>=
+%tf <- tfbs$common[order(truncated)]
+%regulator <- tapply(unlist(mSigDB),unlist(mSigDB),function(x){names(x)})
+%df <- NULL
+%for (i in 1:nrow(df.cytokine)) {
+%    if (df.cytokine$V1[i] %in% names(regulator)) {
+%        reg <- eval(parse(text=paste('regulator$',df.cytokine$V1[i],sep='')))
+%        for (j in 1:length(reg)) {
+%            df <- rbind(df, transform(df.cytokine[i,],TF=reg[j]))
+%        }
+%    }
+%}
+%tf.truncated <- sub('.*V\\$','',df$TF)
+%df <- within(df, TF <- factor(TF, levels = df$TF[order(tf.truncated)]))
+%with(df, levels(TF))
+%
+%print(ggplot(df[df$V4<0.05&df$qval<0.05&df$type=='ligand',],aes(V2,TF)) + 
+%    geom_point(aes(colour=group),size=1) + 
+%    geom_text(aes(label=V1),size=1,hjust=-0.2,alpha=0.3) + 
+%    scale_colour_brewer('',palette='Set1') +
+%    guides(colour = guide_legend(ncol = 2)) +
+%    xlab('starting time') + #xlim(0,12) +
+%    ylab('') +
+%    opts(title='Logistic fitting gene expression time course of HDF\n',
+%        legend.position='none',
+%        #legend.position=c(0.5,0.9),legend.key=theme_blank(),
+%        #legend.text=theme_text(size=8),
+%        #legend.background = theme_rect(),
+%        axis.text.y=theme_text(size=2))
+%)
+%@
+%\end{center}
+%\caption{Histogram of the $-\log_{10}$ transformed and multiple testing 
+%corrected (Benjamini-Hochberg) $p\mhyphen$values according
+%to a $\chi^2$ goodness-of-fit test of the logistic fit of the time series.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=mds,echo=False,fig=True>>=
+%dat <- read.delim('~/data/hdf/hdf_nhk_16091.tsv')
+%coord <- read.delim('~/data/hdf/mds/pca_hdf_nhk_16091_normed_euc', header=F, sep=' ')
+%coord <- coord[,1:2]
+%df <- as.data.frame(coord)
+%df$pvals <- read.delim('~/data/hdf/mds/pval_hdf_nhk_16091.dat', header=F)$V1
+%df$label <- dat$Gene
+%
+%mycolor <- gray.colors(128,0.9,0)
+%print(ggplot(df, aes(x=V1,y=V2)) +
+%    geom_point(aes(colour=-log10(pvals))) + 
+%    geom_text(data=df[df$pvals<0.001,],aes(x=V1,y=V2,label=label),colour='black',size=2,
+%        hjust=-0.2,alpha=0.3) +
+%    scale_colour_gradientn(colours=mycolor) +
+%    guides(colour = guide_colorbar(barwidth = 0.5, barheight = 10, title.hjust=1.6,
+%        title.vjust=0.1,title=expression(paste(-log[10],' ',italic(p),'-value')))) +
+%    xlab("PC 1") + ylab("PC 2") + #ylim(-0.5,0.5) +
+%    coord_equal() +
+%    opts(legend.title=theme_text(angle=90),title="MDS")
+%)
+%@
+%\end{center}
+%\caption{Histogram of the $-\log_{10}$ transformed and multiple testing 
+%corrected (Benjamini-Hochberg) $p\mhyphen$values according
+%to a $\chi^2$ goodness-of-fit test of the logistic fit of the time series.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=thalf,echo=False,fig=True,width=8,height=8>>=
+%df.fit <- as.data.frame(apply(treated[,-1],1,fit))
+%thalf <- apply(df.fit,2,function(x)xfit[which.max(abs(diff(x)/diff(xfit)))])
+%#thalf <- melt(thalf[pval$value<0.01])
+%df <- data.frame(pval=qval, thalf=thalf, max=as.numeric(t(df.fit[nrow(df.fit),])), 
+%    gene=symbol)
+%
+%print(ggplot(df,aes(thalf,max)) + 
+%    geom_point(aes(colour=-log10(pval))) + 
+%    geom_text(aes(label=gene),size=3,hjust=-0.2,alpha=0.3) + #facet_grid(~type) +
+%    scale_colour_gradient(expression(paste(-log[10],' p-value')),
+%        low='skyblue',high='black') +
+%    guides(colour = guide_colorbar(barwidth = 10, barheight = 0.5)) +
+%    geom_hline(aes(yintercept=0),linetype='dashed') +
+%    xlab('half-maximal time (h)') + xlim(0,30) +
+%    ylab(expression(paste('maximal ',log[2],' fold expression'))) +
+%    opts(title='Logistic fitting gene expression time course of HDF\n',
+%        legend.position='top')
+%)
+%@
+%\end{center}
+%\caption{Maximal expression vs. half-maximal time for all genes.
+%Microarray time series of HDF under NHK conditioned medium were first
+%fitted with a logistic function, starting time is defined as the half-maximal
+%time of the fit and maximal fold expression is the plateau/steady state of
+%the fit. Color code indicates the $-\log_{10} p\mhyphen$values for each gene
+%according to a $\chi^2$ test.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=start,echo=False,fig=True,width=8,height=5>>=
+%ligand <- read.delim('~/data/hdf/hdf_nhk_ligand_fit.dat', header=F)
+%receptor <- read.delim('~/data/hdf/hdf_nhk_receptor_fit.dat', header=F)
+%df <- transform(ligand, type=rep('ligand',nrow(ligand)))
+%df <- rbind(df, transform(receptor, type=rep('receptor',nrow(receptor))))
+%g <- rep('Other',nrow(df))
+%groups <- c('IL/R','TNF/R','CXCL/R','CCL/R')
+%group.ligand <- c('^IL[0-9]+[^R]*','TNF[^R]','^CXCL','^CCL')
+%for (i in 1:length(group.ligand)) {
+%    idx <- grep(group.ligand[i], df$V1)
+%    g[idx] <- groups[i]
+%}
+%group.receptor <- c('^IL[0-9]+R','^TNFR','^CXCR','^CCR')
+%for (i in 1:length(group.receptor)) {
+%    idx <- grep(group.receptor[i], df$V1)
+%    g[idx] <- groups[i]
+%}
+%df$group <- g
+%df$qval <- qval[match(df$V1,ctrl$Gene)]
+%df <- within(df, group <- factor(group, levels = c(groups,'Other')))
+%with(df, levels(group))
+%print(ggplot(df[df$V4<0.05&df$qval<0.05,],aes(V2,V5)) + 
+%    geom_point(aes(colour=group)) + 
+%    geom_text(aes(label=V1),size=3,hjust=-0.2,alpha=0.3) + facet_grid(~type) +
+%    #scale_colour_gradient(expression(paste(-log[10],' p-value')),
+%    #    low='skyblue',high='black') +
+%    scale_colour_brewer('',palette='Set1') +
+%    #guides(colour = guide_colorbar(barwidth = 10, barheight = 0.5)) +
+%    guides(colour = guide_legend(ncol = 2)) +
+%    geom_hline(aes(yintercept=0),linetype='dashed') +
+%    xlab('starting time') + xlim(0,12) +
+%    ylab(expression(paste('maximal ',log[2],' fold expression'))) +
+%    opts(title='Logistic fitting gene expression time course of HDF\n',
+%        legend.position=c(0.9,0.9),legend.key=theme_blank(),
+%        legend.text=theme_text(size=8))
+%)
+%@
+%\end{center}
+%\caption{Maximal expression vs. onset time for cytokines and the respective
+%receptors. Microarray time series of HDF under NHK conditioned medium were
+%fitted with a logistic function, starting time is defined as the half-maximal
+%time of the fit and maximal fold expression is the plateau/steady state of
+%the fit. Color code indicates the $-\log_{10} p\mhyphen$values for each genes
+%according to a $\chi^2$ test, only genes with a $p\mhyphen$value $<$ 0.05 are shown.}
+%\label{fig:raw}
+%\end{figure}
+
+% ----------------------------------------------------------------------------
+
+%\begin{figure}[ht]
+%\begin{center}
+%<<label=start_hist,echo=False,fig=True,width=8,height=6>>=
+%ligand <- read.delim('~/data/hdf/hdf_nhk_ligand_fit.dat', header=F)
+%receptor <- read.delim('~/data/hdf/hdf_nhk_receptor_fit.dat', header=F)
+%df <- transform(ligand, type=rep('ligand',nrow(ligand)))
+%df <- rbind(df, transform(receptor, type=rep('receptor',nrow(receptor))))
+%print(ggplot(df[df$V4<0.05,],aes(V2,y=..density..)) + 
+%    geom_histogram(fill='gray',colour='black') + facet_grid(~type) +
+%    geom_density(linetype='dashed') +
+%    xlab('starting time') + 
+%    ylab('density') +
+%    opts(title='Logistic fitting gene expression time course of HDF\n')
+%)
+%@
+%\end{center}
+%\caption{Distribution of onset time for cytokines and the respective
+%receptors. A Gaussian smooth density estimate is also plotted for
+%each histogram. Only genes with a $p\mhyphen$value $<$ 0.05 are considered.}
+%\label{fig:raw}
+%\end{figure}
+
+\end{document}

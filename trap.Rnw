@@ -54,7 +54,7 @@ vplayout <- function(x, y) {
 }
 @
 
-<<label=gev,echo=False,fig=True>>=
+<<label=gev,echo=False,fig=True,eval=False>>=
 gev.param <- read.delim('~/MicroarrayAnalysis/trunk/trap/transfac.gc0.5.GEV_lin.dat')
 res.cebpd <- read.delim('~/MicroarrayAnalysis/trunk/trap/human_cebpd.trap', header=F)
 #mat <- res$V1[res$V1 %in% gev.param$X.matrix]
@@ -83,7 +83,7 @@ print(ggplot(df,aes(x,y)) + geom_line() +
 
 % ----------------------------------------------------------------------------
 
-<<label=cytokine_trap,echo=False,fig=False,cache=True>>=
+<<label=cytokine_trap,echo=False,fig=False,cache=True,eval=False>>=
 human.cytokine <- read.DNAStringSet('~/data/fimo/human_cytokine.fa')
 refseq2symbol <- function(refseq.str) {
     all.str <- unlist(strsplit(refseq.str, '_'))
@@ -107,7 +107,7 @@ all.pval <- foreach(i=1:length(human.cytokine), .combine='c') %dopar% {
 
 % ----------------------------------------------------------------------------
 
-<<label=affinity_diff,echo=False,fig=True>>=
+<<label=affinity_diff,echo=False,fig=True,eval=False>>=
 ctrl <- read.delim('~/data/hdf/hdf_ctrl_16091.tsv')
 treated <- read.delim('~/data/hdf/hdf_nhk_16091.tsv')
 ctrl.tpoint <- c(0,2,4,8,12,24)
@@ -131,7 +131,7 @@ print(ggplot(df,aes(-log10(affinity),-log10(diff))) + geom_point() +
 
 % ----------------------------------------------------------------------------
 
-<<label=affinity_upregulation,echo=False,fig=True>>=
+<<label=affinity_upregulation,echo=False,fig=True,eval=False>>=
 cytokine.sig <- unique(df$label[df$diff<0.05])
 #treated <- list(dat=treated[match(cytokine.sig,treated$Gene),], cond='NHK', 
 #    tpoint=treated.tpoint)
@@ -156,7 +156,7 @@ print(ggplot(df.affinity.uptime,aes(uptime,-log10(affinity))) + geom_point() +
 
 % ----------------------------------------------------------------------------
 
-<<label=matrix_scan,echo=False,fig=True>>=
+<<label=matrix_scan,echo=False,fig=True,eval=False>>=
 pval.cebpd <- res.cebpd[res.cebpd$V1 %in% gev.param$X.matrix,]
 idx <- match(pval.cebpd$V1, gev.param$X.matrix)
 L <- 1000
@@ -184,7 +184,7 @@ print(ggplot(pval.cebpd[grep('V\\$',pval.cebpd$V1),],aes(-log10(pval),V4)) +
 
 % ----------------------------------------------------------------------------
 
-<<label=tf_scan,echo=False,fig=False,cache=True,eval=True>>=
+<<label=tf_scan,echo=False,fig=False,cache=True,eval=False>>=
 for (tf.seq in dir('~/data/hdf/tf_seq/')) {
     seq.file <- paste('~/data/hdf/tf_seq/',tf.seq,sep='')
     res.file <- paste('~/data/hdf/tf_seq/',sub('fa','trap',tf.seq),sep='')
@@ -233,7 +233,7 @@ for (tf.seq in dir('~/data/hdf/tf_seq/')) {
 
 % ----------------------------------------------------------------------------
 
-<<label=tf_network,echo=False,fig=False,eval=True>>=
+<<label=tf_network,echo=False,fig=False,eval=False>>=
 tf.symbol <- 'IRF_|IRF7|CEBPD|EMX2|MEF2D|NFE2|NFK|RELB|RUNX1|STAT[134]'
 idx <- grep(tf.symbol, gev.param$X.matrix)
 L <- 1000
@@ -276,13 +276,23 @@ dev.off()
 
 % ----------------------------------------------------------------------------
 
-<<label=tf_skewt,echo=False,fig=False,cache=True,eval=False>>=
-tf <- read.delim('~/data/tf/tf_table_final.csv', sep=';')
-sig.tf <- foreach(i=2:ncol(diff), .combine='c') %dopar% {
-    fit <- st.mle(y=diff[,i])
-    pval <- 1 - pst(diff[,i], dp=fit$dp)
-    list(rownames(diff)[pval<0.01 & rownames(diff) %in% tf$Gene_Abbrev])
+<<label=profile,echo=False,fig=True,eval=True>>=
+res <- read.delim('~/github/TRAP/human_cebpd.trap', header=F)
+res <- res[grep('ATF3|NFKAPPAB',res$V1),]
+df <- NULL
+for (i in 1:nrow(res)) {
+    profile <- as.numeric(unlist(strsplit(as.character(res$V2[i]),',')))
+    current <- data.frame(matrix=res$V1[i], pos=1:length(profile), 
+        affinity=profile)
+    df <- rbind(df, current)
 }
+print(ggplot(df,aes(pos-1001,affinity,colour=matrix)) + geom_line() +
+    scale_colour_brewer('',palette='Set1') +
+    labs(x='Bases relative to TSS',y='Affinity',
+        title='Affinity profile of CEBPD promoter region\n') +
+    theme(legend.position=c(0.2,0.8),legend.key=element_blank(),
+        legend.background=element_blank())
+)
 @
 
 % ----------------------------------------------------------------------------

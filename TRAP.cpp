@@ -177,6 +177,8 @@ int main(int argc, char *argv[]){
       //LOOP OVER SEQUENCE
       int illegalBase;
 
+      cout << matrix_id << "\t";
+
       for(int n = 0; n < seqlength - motiflength + 1; n++){ //LOOP OVER SEQUENCE
         double dE_forward = 0;
         double dE_compl = 0;
@@ -230,6 +232,7 @@ int main(int argc, char *argv[]){
           P_combined = P_combined + Pstored[n];
           //P_uncorrected = P_uncorrected + P_bound_F + P_bound_C;
           //cout<<P_bound_F<<"\t"<<P_bound_C<<"\t"<<Pstored[n]<<"\t"<<P_combined<<"\t"<<P_uncorrected<<"\n";
+          cout << Pstored[n] << ",";
         }
         else{
           Pstored[n] = 0;
@@ -237,7 +240,7 @@ int main(int argc, char *argv[]){
 
       }//loop over sequence
 
-      cout << matrix_id << "\t" << P_combined << "\t" << seqlength << "\t" <<
+      cout << "\t" << P_combined << "\t" << motiflength << "\t" <<
           info << "\n";
     
     }

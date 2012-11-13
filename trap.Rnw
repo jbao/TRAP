@@ -41,10 +41,11 @@ library(reshape)
 library(Biostrings)
 library(org.Hs.eg.db)
 library(doMC)
+library(grid)
 library(devtools)
 load_all('~/tool/util')
 
-registerDoMC(12)
+registerDoMC(4)
 theme_set(theme_bw(15))
 
 subplot <- function(x, y) viewport(layout.pos.row=x, layout.pos.col=y) 
@@ -54,7 +55,7 @@ vplayout <- function(x, y) {
 }
 @
 
-<<label=gev,echo=False,fig=True,eval=False>>=
+<<label=gev,echo=False,fig=True>>=
 gev.param <- read.delim('~/MicroarrayAnalysis/trunk/trap/transfac.gc0.5.GEV_lin.dat')
 res.cebpd <- read.delim('~/MicroarrayAnalysis/trunk/trap/human_cebpd.trap', header=F)
 #mat <- res$V1[res$V1 %in% gev.param$X.matrix]
@@ -131,19 +132,22 @@ print(ggplot(df,aes(-log10(affinity),-log10(diff))) + geom_point() +
 
 % ----------------------------------------------------------------------------
 
-<<label=affinity_upregulation,echo=False,fig=True,eval=False>>=
+<<label=affinity_upregulation,echo=False,fig=True,cache=True,eval=False>>=
 cytokine.sig <- unique(df$label[df$diff<0.05])
 #treated <- list(dat=treated[match(cytokine.sig,treated$Gene),], cond='NHK', 
 #    tpoint=treated.tpoint)
 #df <- plot.logistic(treated, '~/data/hdf/hdf-cytokine_logistic.pdf')
 idx.treated <- which(names(treated)=='Gene')
-fit.treated <- apply(treated[match(cytokine.sig,treated$Gene),-idx.treated],1,
+#fit.treated <- apply(treated[match(cytokine.sig,treated$Gene),-idx.treated],1,
+#    function(x) fit.logistic(treated.tpoint,x))
+fit.treated <- apply(treated[,-idx.treated],1,
     function(x) fit.logistic(treated.tpoint,x))
 nfit <- 100
 xfit <- seq(0,max(treated.tpoint),length=nfit)
 uptime <- apply(fit.treated,2,function(x)xfit[which.max(abs(diff(x)/diff(xfit)))])
 df.uptime <- melt(uptime)
-df.uptime$Gene <- cytokine.sig
+#df.uptime$Gene <- cytokine.sig
+df.uptime$Gene <- treated$Gene
 df.affinity.uptime <- subset(df, diff<0.05)
 df.affinity.uptime$uptime <- df.uptime$value[match(df.affinity.uptime$label,
     df.uptime$Gene)]
@@ -184,11 +188,75 @@ print(ggplot(pval.cebpd[grep('V\\$',pval.cebpd$V1),],aes(-log10(pval),V4)) +
 
 % ----------------------------------------------------------------------------
 
-<<label=tf_scan,echo=False,fig=False,cache=True,eval=False>>=
-for (tf.seq in dir('~/data/hdf/tf_seq/')) {
-    seq.file <- paste('~/data/hdf/tf_seq/',tf.seq,sep='')
-    res.file <- paste('~/data/hdf/tf_seq/',sub('fa','trap',tf.seq),sep='')
-    system(paste('./TRAP /home/sohse/TFP_2012.1_data/dat/matrix.dat',seq.file,
+<<label=uptime,echo=False,fig=True,cache=True,eval=True>>=
+# get upregulated DEG
+ctrl <- read.delim('~/data/hdf/hdf_ctrl_16091.tsv')
+treated <- read.delim('~/data/hdf/hdf_nhk_16091.tsv')
+diff <- read.delim('~/data/hdf/hdf_diff_16091.tsv')
+diff.mean <- rowMeans(diff[,-1])
+ctrl.tpoint <- c(0,2,4,8,12,24)
+treated.tpoint <- c(0,1,2,3,4,6,8,10,12,18,24)
+core <- cbind(ctrl[,-1], treated[,-1])
+pval <- apply(core,1,lrtest, ctrl.tpoint, treated.tpoint)
+qval <- p.adjust(pval, 'BH')
+sig.gene <- ctrl$Gene[diff.mean>0&qval<0.05]
+
+# get uptime
+idx.treated <- which(names(treated)=='Gene')
+fit.treated <- apply(treated[,-idx.treated],1,
+    function(x) fit.logistic(treated.tpoint,x))
+nfit <- 100
+xfit <- seq(0,max(treated.tpoint),length=nfit)
+uptime <- apply(fit.treated,2,function(x)xfit[which.max(abs(diff(x)/diff(xfit)))])
+#df.uptime <- data.frame(gene=treated$Gene,uptime=uptime)
+df.uptime <- data.frame(gene=sig.gene,uptime=uptime[match(sig.gene,treated$Gene)])
+df.uptime$phase <- 'other'
+df.uptime$phase[df.uptime$uptime<5] <- 'early'
+df.uptime$phase[df.uptime$uptime<15&df.uptime$uptime>=5] <- 'late'
+df.uptime <- subset(df.uptime, phase!='other')
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=seq,echo=False,fig=False,eval=False>>=
+human.promoter <- read.DNAStringSet('~/data/fimo/human_upstream1000.fa')
+tf.entrez <- unlist(mget(as.character(df.uptime$gene), org.Hs.egSYMBOL2EG, 
+    ifnotfound=NA))
+tf.entrez <- tf.entrez[!is.na(tf.entrez)]
+tf.refseq <- unlist(mget(tf.entrez, org.Hs.egREFSEQ))
+tf.refseq <- tf.refseq[grep('NM',tf.refseq)]
+idx <- grep(paste(tf.refseq,collapse='_|'), names(human.promoter))
+
+refseq2symbol <- function(refseq.str) {
+    all.str <- unlist(strsplit(refseq.str, '_'))
+    refseq <- paste(all.str[1:2], collapse='_')
+    #print(refseq)
+    entrez <- unlist(mget(refseq,org.Hs.egREFSEQ2EG,ifnotfound=NA))
+    if (is.na(entrez))
+        return('')
+    else
+        return(get(entrez, org.Hs.egSYMBOL))
+}
+wd <- '~/data/hdf/sig_seq/'
+for (i in 1:length(idx)) {
+#tmp <- foreach(i=1:length(idx), .combine='c') %dopar% {
+    symbol <- refseq2symbol(names(human.promoter)[idx[i]])
+    if (symbol != '') {
+        seq.file <- paste(wd,symbol,'.fa',sep='')
+        write.XStringSet(human.promoter[idx[i]], seq.file)
+    }
+    symbol
+}
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=tf_scan,echo=False,fig=False,cache=False,eval=False>>=
+all.file <- dir(wd, 'fa')
+foreach(i=1:length(all.file)) %dopar% {
+    seq.file <- paste(wd,all.file[i],sep='')
+    res.file <- paste(wd,sub('fa','trap',all.file[i]),sep='')
+    system(paste('./TRAP ~/data/TRANSFAC/TFP_2012.3/dat/matrix.dat',seq.file,
         '>',res.file))
 }
 @
@@ -233,52 +301,145 @@ for (tf.seq in dir('~/data/hdf/tf_seq/')) {
 
 % ----------------------------------------------------------------------------
 
-<<label=tf_network,echo=False,fig=False,eval=False>>=
-tf.symbol <- 'IRF_|IRF7|CEBPD|EMX2|MEF2D|NFE2|NFK|RELB|RUNX1|STAT[134]'
+<<label=tf_network,echo=False,fig=True,width=8,height=6,cache=True,eval=True>>=
+wd <- '~/data/hdf/sig_seq/'
+#tf.symbol <- 'IRF_|IRF7|CEBPD|EMX2|MEF2D|NFE2|NFK|RELB|RUNX1|STAT[134]'
+tf.symbol <- 'V\\$'
 idx <- grep(tf.symbol, gev.param$X.matrix)
 L <- 1000
 all <- NULL
-for (res.file in dir('~/data/hdf/tf_seq/','*.trap')) {
-    res <- read.delim(paste('~/data/hdf/tf_seq/',res.file,sep=''), header=F)
+all.file <- dir(wd,'trap')
+#for (i in 1:length(all.file)) {
+all <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
+#all <- foreach(idx=1:2, .combine='rbind') %dopar% {
+    res <- read.delim(paste(wd,all.file[ii],sep=''), header=F)
     df <- subset(res, V1 %in% gev.param$X.matrix[idx])
+    idx <- match(df$V1, gev.param$X.matrix)
     df$xi <- gev.param$xi0[idx] + gev.param$xi1[idx]*log10(L)
     df$sig <- gev.param$sig0[idx] + gev.param$sig1[idx]*log10(L)
     df$mu <- gev.param$mu0[idx] + gev.param$mu1[idx]*log10(L)
     df$pval <- rep(0,nrow(df))
     for (i in 1:nrow(df)) {
-        df$pval[i] <- pgev(log10(df$V2[i]), loc=df$mu[i], scale=df$sig[i],
+        df$pval[i] <- pgev(log10(df$V3[i]), loc=df$mu[i], scale=df$sig[i],
             shape=df$xi[i], lower.tail=F)
     }
-    df$tf <- sub('.trap', '', res.file)
-    all <- rbind(all, df)
+    df$gene <- sub('.trap', '', all.file[ii])
+    #if (df$tf %in% df.uptime$Gene) {
+    #    df$uptime <- df.uptime$value[which(df.uptime$Gene==df$tf)]
+    #    all <- rbind(all, df)
+    #}
+    #all <- rbind(all, df)
+    df[,c('V1','pval','gene')]
 }
+#all.wide <- reshape(all[,c('V1','pval','gene')], v.names = "pval", idvar = "gene",
+#    timevar = "V1", direction = "wide")
+#stop()
 
-pdf('~/data/hdf/hdf-tf_scan.pdf',8,11)
-unique.tf <- levels(factor(all$tf))
-for (i in 1:ceiling(length(unique.tf)/12)) {
-    slice <- seq((i-1)*12+1,i*12)
-    slice <- slice[!(slice > length(unique.tf))]
-    current <- subset(all, tf %in% unique.tf[slice])
-    print(ggplot(current,aes(-log10(pval),V4)) + 
-        geom_point() +
-        facet_wrap(~tf,ncol=3) +
-        geom_text(aes(label=V1),size=2,hjust=-0.1,alpha=0.3) +
-        #geom_text(data=pval.cebpd[grep('ATF|NFK',pval.cebpd$V1),],aes(label=V1),
-        #    size=3,hjust=-0.2,colour='red') +
-        xlim(0,6) +
-        labs(x=expression(paste(-log[10]~italic(p),'-value')), 
-            y='Information content', 
-            title='Motifs binding to CEBPD\n')
-    )
-}
-dev.off()
+motif2symbol <- read.delim('~/data/TRANSFAC/Motif_Symbol.txt') 
+motif2symbol$tid <- sub('M[0-9]+_','',motif2symbol$Motif)
+all$phase <- df.uptime$phase[match(all$gene, df.uptime$gene)]
+all$tf <- motif2symbol$Symbol[match(all$V1, motif2symbol$tid)]
+
+#pdf('~/data/hdf/hdf-tf_scan.pdf',8,11)
+#unique.matrix <- levels(factor(all$V1))
+#for (i in 1:ceiling(length(unique.matrix)/12)) {
+    #slice <- seq((i-1)*12+1,i*12)
+    #slice <- slice[!(slice > length(unique.matrix))]
+    #slice <- 1:6
+    #current <- subset(all, V1 %in% unique.matrix[slice])
+    #print(ggplot(current,aes(uptime,-log10(pval))) + 
+    #    geom_point() +
+    #    facet_wrap(~V1,ncol=3) +
+    #    geom_text(aes(label=tf),size=2,hjust=-0.1,alpha=0.3) +
+    #    #geom_text(data=pval.cebpd[grep('ATF|NFK',pval.cebpd$V1),],aes(label=V1),
+    #    #    size=3,hjust=-0.2,colour='red') +
+    #    xlim(0,26) +
+    #    #labs(x=expression(paste(-log[10]~italic(p),'-value')), 
+    #    #    y='Information content', 
+    #    #    title='Motifs binding to CEBPD\n')
+    #    labs(x='Upregulation time (h)',
+    #        y=expression(paste(-log[10]~italic(p),'-value')))
+    #)
+#}
+#dev.off()
+#qpcr.pval <- read.delim('~/data/hdf/hdf_qpcr_pval.tsv')
+#qpcr.pval <- rbind(qpcr.pval, data.frame(gene='TGFB2',V1=qpcr.pval$V1[which(qpcr.pval$gene=='TGFB1')]))
+#qpcr.pval <- rbind(qpcr.pval, data.frame(gene='TGFB3',V1=qpcr.pval$V1[which(qpcr.pval$gene=='TGFB1')]))
+#all$full.red.pval <- qpcr.pval$V1[match(all$tf,qpcr.pval$gene)]
+#print(ggplot(all,aes(-log10(pval),-log10(full.red.pval))) + 
+#    geom_point() +
+#    facet_wrap(~V1,ncol=3) +
+#    geom_text(aes(label=tf),size=3,hjust=-0.2,alpha=0.5) +
+#    #geom_text(data=pval.cebpd[grep('ATF|NFK',pval.cebpd$V1),],aes(label=V1),
+#    #    size=3,hjust=-0.2,colour='red') +
+#    xlim(0,4) + #ylim(0,11) +
+#    #labs(x=expression(paste(-log[10]~italic(p),'-value')), 
+#    #    y='Information content', 
+#    #    title='Motifs binding to CEBPD\n')
+#    labs(x='Affinity',y='Differential regulation (IKKi)')
+#        #y=expression(paste(-log[10]~italic(p),'-value')))
+#)
 @
 
 % ----------------------------------------------------------------------------
 
-<<label=profile,echo=False,fig=True,eval=True>>=
-res <- read.delim('~/github/TRAP/human_cebpd.trap', header=F)
-res <- res[grep('ATF3|NFKAPPAB',res$V1),]
+<<label=ttest,echo=False,fig=True,eval=True>>=
+# t-test of sitar scores between early and late genes
+pval.early.late <- function(df, type) {
+    df.early <- subset(df, phase=='early')
+    df.late <- subset(df, phase=='late')
+    score.early <- df.early$pval[df.early$pval!=0]
+    score.late <- df.late$pval[df.late$pval!=0]
+    if (length(score.early)>1 & length(score.late)>1) {
+        res <- t.test(-log10(score.early),-log10(score.late))
+        if (type=='stat')
+            return(res$statistic)
+        else
+            return(res$p.value)
+    } else
+        return(NA)    
+}
+#unique.tf <- unique(all$tf)
+#for (i in 1:length(unique.tf)) {
+#    df <- subset(all, tf==unique.tf[i])
+#    
+#    df.early <- subset(df, phase=='early')
+#    df.late <- subset(df, phase=='late')
+#    score.early <- df.early$pval[df.early$pval!=0]
+#    score.late <- df.late$pval[df.late$pval!=0]
+#    if (length(score.early)>1 & length(score.late)>1)
+#        t.test(-log10(score.early),-log10(score.late))$statistic
+#}
+all <- subset(all, !is.na(tf))
+tstat <- ddply(all, .(tf), function(x) pval.early.late(x,'stat'))
+pval <- ddply(all, .(tf), function(x) pval.early.late(x,'pval'))
+df.t <- merge(tstat, pval)
+df.t$uptime <- uptime[match(df.t$tf, ctrl$Gene)]
+df.t$tf.diff.qval <- qval[match(df.t$tf, ctrl$Gene)]
+
+print(ggplot(df.t,aes(abs(t),-log10(tf.diff.qval))) + geom_point() +
+    geom_text(aes(label=tf),size=3,hjust=-0.2) 
+)
+#print(ggplot(df.t,aes(uptime,t)) + geom_point(aes(size=-log10(V1))) +
+#    geom_text(data=subset(df.t,V1<0.2),aes(label=tf),size=3,hjust=-0.2) +
+#    guides(size=guide_legend(title=expression(paste(-log[10]~'p-value')))) +
+#    xlim(0,15) + labs(title='Affinity\n') +
+#    theme(legend.position=c(0.85,0.85),legend.key=element_blank(),
+#        legend.background=element_blank()) 
+#)
+
+#df <- merge(df.t, sitar.res)
+#names(df) <- c('tf','t','ttest.pval','tf.uptime','gene','score','gene.phase')
+#df$tf.diff.qval <- qval[match(df$tf, ctrl$Gene)]
+#df$gene.diff.qval <- qval[match(df$gene, ctrl$Gene)]
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=profile,echo=False,fig=True,eval=False>>=
+trap <- read.delim('~/data/hdf/qpcr_seq/IL6.trap', header=F)
+res <- trap[grep('CEBPB_Q6$|NFKB_Q6$',trap$V1),]
+#res <- res[grep('CEBPD|NFKB_Q6$',res$V1),]
 df <- NULL
 for (i in 1:nrow(res)) {
     profile <- as.numeric(unlist(strsplit(as.character(res$V2[i]),',')))
@@ -286,255 +447,171 @@ for (i in 1:nrow(res)) {
         affinity=profile)
     df <- rbind(df, current)
 }
+data <- df$affinity[df$matrix==levels(factor(df$matrix))[1]]
+kernel <- df$affinity[df$matrix==levels(factor(df$matrix))[2]]
+df <- rbind(df, data.frame(matrix='Convolution', 
+    pos=1:(length(data)+length(kernel)-1),
+    affinity=convolve(data,rev(kernel),type='o')))
+
+get.peak <- function(df) {
+    res <- peakdet(df$affinity, 0.001, df$pos-1001)
+    as.data.frame(res$peak)
+}
+df.peak <- ddply(df, .(matrix), get.peak)
+
 print(ggplot(df,aes(pos-1001,affinity,colour=matrix)) + geom_line() +
+    geom_point(data=df.peak,aes(V1,V2),shape=8) +
     scale_colour_brewer('',palette='Set1') +
+    facet_wrap(~matrix,ncol=1,scales='free') +
     labs(x='Bases relative to TSS',y='Affinity',
-        title='Affinity profile of CEBPD promoter region\n') +
-    theme(legend.position=c(0.2,0.8),legend.key=element_blank(),
+        title='Affinity profile of CXCL1 promoter region\n') +
+    theme(legend.position='none',legend.key=element_blank(),
         legend.background=element_blank())
 )
 @
 
 % ----------------------------------------------------------------------------
 
-<<label=tfbs_sig,echo=False,fig=False,cache=True,eval=False>>=
-#tfbs.entrez <- list(t2=c('ZEB1','NFKB','TF65'),t3=c('NFKB','TF65'),
-#    t4=c('NFKB','TF65','IRF'),t5=c('CEBP','IRF','NFKB','TF65','NFAT'),
-#    t6=c('CEBP','IRF','NFKB','TF65','NFAT'),
-#    t7=c('ZEB1','CEBP','IRF','NFKB','TF65','NFAT'),
-#    t8=c('ZEB1','CEBP','IRF','NFKB','TF65','NFAT'),
-#    t9=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','FOXJ2','SREBF1','STAT5B'),
-#    t10=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','FOXJ2','SREBF1','STAT5B','^REL$'),
-#    t11=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','FOXJ2','SREBF1','STAT5B','^REL$'),
-#    t12=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
-#    t13=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
-#    t14=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
-#    t15=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
-#    t16=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
-#    t17=c('ZEB1','PAX3','CEBP','IRF','NFKB','TF65','NFAT','SREBF1','STAT5B','^REL$'),
-#    t18=c('PAX3','CEBP','IRF','NFKB','TF65','SREBF1','STAT5B','^REL$'),
-#    t19=c('PAX3','CEBP','IRF','NFKB','TF65','SREBF1','STAT5B','^REL$'),
-#    t20=c('PAX3','CEBP','IRF','NFKB','TF65','SREBF1','STAT5B','^REL$'),
-#    t21=c('CEBP','IRF','NFKB','TF65','STAT5B'),
-#    t22=c('CEBP','IRF','NFKB','TF65','STAT5B'),
-#    t23=c('IRF','NFKB','TF65'),
-#    t24=c('IRF','NFKB','TF65')
-#    )
-tf.interesting <- list(tf=c('CEBPD','RELB'))
-tpoint <- 1:24
-tf.entrez <- NULL
-for (i in 1:length(tf.interesting)) {
-    tf <- unlist(sapply(tf.interesting[[i]], function(x) hippie.map$idmap$official[grep(x,hippie.map$idmap$official)]))
-    tf.entrez <- rbind(tf.entrez, data.frame(tf.entrez=hippie.map$idmap$entrez[match(tf,hippie.map$idmap$official)],time=paste(tpoint[i],'h')))
+<<label=compel_data,echo=False,fig=False,cache=True,eval=False>>=
+tf.symbol <- 'V\\$'
+idx <- grep(tf.symbol, gev.param$X.matrix)
+L <- 1000
+all <- NULL
+#wd <- '~/data/TRANSFAC/compel/seq/'
+wd <- '~/data/hdf/qpcr_seq/'
+all.file <- dir(wd,'trap')
+#for (ii in 1:2) {
+all <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
+    res <- read.delim(paste(wd,all.file[ii],sep=''), header=F)
+    df <- subset(res, V1 %in% gev.param$X.matrix[idx])
+    idx <- match(df$V1, gev.param$X.matrix)
+    df$xi <- gev.param$xi0[idx] + gev.param$xi1[idx]*log10(L)
+    df$sig <- gev.param$sig0[idx] + gev.param$sig1[idx]*log10(L)
+    df$mu <- gev.param$mu0[idx] + gev.param$mu1[idx]*log10(L)
+    df$pval <- rep(0,nrow(df))
+    for (i in 1:nrow(df)) {
+        df$pval[i] <- pgev(log10(df$V3[i]), loc=df$mu[i], scale=df$sig[i],
+            shape=df$xi[i], lower.tail=F)
+        profile <- as.numeric(unlist(strsplit(as.character(df$V2[i]),',')))
+        peak.res <- peakdet(profile, 1e-30)
+        df$pos[i] <- peak.res$peak[which.max(peak.res$peak[,2]),1]
+    }
+    df$gene <- sub('.trap', '', all.file[ii])
+    #if (df$tf %in% df.uptime$Gene) {
+    #    df$uptime <- df.uptime$value[which(df.uptime$Gene==df$tf)]
+    #    all <- rbind(all, df)
+    #}
+    #all <- rbind(all, df)
+    df[,c('V1','pos','pval','gene')]
 }
-receptor <- read.delim('~/MicroarrayAnalysis/trunk/python/hsa04060.receptor', 
-    header=F)$V1
-receptor.entrez <- unlist(mget(as.character(receptor), org.Hs.egSYMBOL2EG, 
-    ifnotfound=NA))
-receptor.entrez <- receptor.entrez[receptor.entrez %in% hippie.map$idmap$entrez]
-tf.entrez <- tf.entrez[tf.entrez$tf.entrez %in% hippie.map$idmap$entrez,]
-#mfpt.sp <- NULL
-mfpt.sp <- foreach(i=1:length(receptor.entrez), .combine='rbind') %:%
-    foreach(j=1:nrow(tf.entrez), .combine='rbind') %dopar% {
-#for (i in 1:10) {
-#    for (j in 1:10) {
-        ii <- hippie.map$idmap$vertex[which(receptor.entrez[i] == hippie.map$idmap$entrez)] + 1
-        jj <- hippie.map$idmap$vertex[which(tf.entrez$tf.entrez[j] == hippie.map$idmap$entrez)] + 1
-        receptor.idx <- match(receptor.entrez[i], V(hippie.net)$gene)
-        tf.idx <- match(tf.entrez$tf.entrez[j], V(hippie.net)$gene)
-        sp <- shortest.paths(hippie.net, receptor.idx, tf.idx, weights=NA) # BFS
-        data.frame(mfpt=hippie$mfpt[ii,jj], sp=as.numeric(sp),
-            receptor=get(receptor.entrez[i], org.Hs.egSYMBOL),
-            tf=hippie.map$idmap$official[which(tf.entrez$tf.entrez[j]==hippie.map$idmap$entrez)], time=tf.entrez$time[j])
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=compel,echo=False,fig=False,eval=False>>=
+pdf('~/data/TRANSFAC/compel/compel_affinity.pdf',8,11)
+unique.gene <- levels(factor(all$gene))
+for (i in 1:ceiling(length(unique.gene)/12)) {
+    slice <- seq((i-1)*12+1,i*12)
+    slice <- slice[!(slice > length(unique.gene))]
+    current <- subset(all, gene %in% unique.gene[slice])
+    current <- current[current$pval!=0&current$pos>900,]
+    print(ggplot(current,aes(pos-1001,-log10(pval))) + geom_point() +
+        geom_text(data=subset(current,pval<0.05),aes(label=V1),size=1.5,vjust=-1,hjust=0.5) +
+        facet_wrap(~gene,ncol=3,scales='free_y') +
+        #xlim(-100,0) +
+        labs(x='Bases relative to TSS',y='Affinity') 
+        #    title='Affinity profile of CXCL1 promoter region\n') +
+        #theme(legend.position='none',legend.key=element_blank(),
+        #    legend.background=element_blank())
+    )
+}
+dev.off()
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=peakdet,echo=False,fig=True,eval=False>>=
+t <- seq(0,10,0.001)
+series <- 0.3*sin(t) + sin(1.3*t) + 0.9*sin(4.2*t) + 0.02*rnorm(10001)
+res <- peakdet(series, 0.3, t)
+df <- data.frame(t=t, series=series)
+df.peak <- as.data.frame(res$peak)
+print(ggplot(df,aes(t,series)) + geom_line() + 
+    geom_point(data=df.peak,aes(V1,V2),colour='red')
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=synergistic,echo=False,fig=True,eval=True,width=8,height=8,eval=False>>=
+gene <- 'IL6'
+res <- read.delim(paste('~/data/hdf/qpcr_seq/',gene,'.trap',sep=''), header=F)
+df <- subset(res, V1 %in% gev.param$X.matrix)
+tf.symbol <- 'V\\$'
+idx <- grep(tf.symbol, gev.param$X.matrix)
+df <- subset(res, V1 %in% gev.param$X.matrix[idx])
+idx <- match(df$V1, gev.param$X.matrix)
+L <- 1000
+df$xi <- gev.param$xi0[idx] + gev.param$xi1[idx]*log10(L)
+df$sig <- gev.param$sig0[idx] + gev.param$sig1[idx]*log10(L)
+df$mu <- gev.param$mu0[idx] + gev.param$mu1[idx]*log10(L)
+df$pval <- rep(0,nrow(df))
+for (i in 1:nrow(df)) {
+    df$pval[i] <- pgev(log10(df$V3[i]), loc=df$mu[i], scale=df$sig[i],
+        shape=df$xi[i], lower.tail=F)
+}
+df$tf <- gene
+df <- subset(df, pval<0.01)
+
+get.peak <- function(df) {
+    res <- peakdet(df$affinity, sort(df$affinity,decreasing=T)[2], df$pos-1001)
+    as.data.frame(res$peak)
+}
+
+distance <- foreach(i=1:nrow(df), .combine='rbind') %:%
+    foreach(j=1:nrow(df), .combine='c') %dopar% {
+#distance <- matrix(0,2,nrow(df))
+#for (i in 1:2) {
+#    for (j in 1:nrow(df)) {
+
+    data <- as.numeric(unlist(strsplit(as.character(df$V2[i]),',')))
+    kernel <- as.numeric(unlist(strsplit(as.character(df$V2[j]),',')))
+    df.conv <- data.frame(matrix='Convolution', 
+        pos=1:(length(data)+length(kernel)-1),
+        affinity=convolve(data,rev(kernel),type='o'))
+    df.peak <- get.peak(df.conv)
+    df.peak$V1[nrow(df.peak)] - (length(data)+length(kernel)-1-1001)
     #}
 }
-@
+distance <- as.data.frame(distance, row.names=as.character(df$V1))
+names(distance) <- as.character(df$V1)
 
-% ----------------------------------------------------------------------------
+dd.col <- as.dendrogram(hclust(dist(distance)))
+col.ord <- order.dendrogram(dd.col)
 
-%\begin{figure}[ht]
-%\centering
-%<<label=top_mfpt,echo=False,fig=True,eval=True,width=8,height=5>>=
-%#sp.reduced <- read.delim('~/data/network/hppi/hppi_reduced_sp.tsv', header=F)
-%#get.mfpt <- function(source, target) {
-%#    if (source %in% hippie.map$idmap$entrez & target %in% hippie.map$idmap$entrez) {
-%#        source.idx <- hippie.map$idmap$vertex[which(source==hippie.map$idmap$entrez)] + 1
-%#        target.idx <- hippie.map$idmap$vertex[which(target==hippie.map$idmap$entrez)] + 1
-%#        res <- hippie$mfpt[source.idx, target.idx]
-%#    } else {
-%#        res <- NA
-%#    }
-%#    return(res)
-%#}
-%#sp.reduced$receptor.entrez <- unlist(mget(as.character(sp.reduced$V1), org.Hs.egSYMBOL2EG))
-%#sp.reduced$tf.entrez <- unlist(mget(as.character(sp.reduced$V2), org.Hs.egSYMBOL2EG))
-%#sp.reduced$mfpt <- apply(sp.reduced, 1, function(x) get.mfpt(x[4],x[5]))
-%#sp.reduced$group <- 'Other'
-%#sp.reduced$group[grep('STAT',sp.reduced$V2)] <- 'STAT'
-%#sp.reduced$group[grep('NFK',sp.reduced$V2)] <- 'NFKB'
-%#sp.reduced$group[grep('RELA',sp.reduced$V2)] <- 'NFKB'
-%#sp.reduced$group[grep('CEBP',sp.reduced$V2)] <- 'CEBP'
-%#sp.reduced <- within(sp.reduced, group <- factor(group, 
-%#    levels = c('NFKB','CEBP','STAT','Other')))
-%#with(sp.reduced, levels(group))
-%#df.label <- ddply(sp.reduced, .(V2), function(x) x[which.min(x$mfpt),])
-%#stop()
-%#sp.reduced <- sp.reduced[!is.na(sp.reduced$mfpt),]
-%df <- NULL
-%for (t in levels(mfpt.sp$time)) {
-%    current <- subset(mfpt.sp, time==t)
-%    res <- ddply(current, .(receptor), summarise, mean.mfpt=mean(mfpt), 
-%        mean.sp=mean(sp))
-%    res$time <- t
-%    df <- rbind(df, res)
-%}
-%#df <- within(df, group <- factor(group, 
-%#    levels = c('NFKB','CEBP','STAT','Other')))
-%#with(df, levels(group))
-%#sp.reduced <- sp.reduced[sp.reduced$group=='NFKB'|sp.reduced$group=='CEBP',]
-%#sp.reduced <- sp.reduced[sp.reduced$group=='NFKB',]
-%#df <- ddply(sp.reduced, .(V1), summarise, mean.mfpt=mean(mfpt), mean.sp=mean(V3))
-%#df <- df[grep('IL1R|IL6|TNF',df$V1),]
-%group <- sub('IL1R.+','IL1R',df$receptor)
-%group <- sub('TNFR.+','TNFR',group)
-%df$group <- group
-%df2 <- NULL
-%for (t in levels(factor(df$time))) {
-%    current <- subset(df, time==t)
-%    res <- ddply(current, .(group), summarise, mean.mfpt=mean(mean.mfpt),
-%        mean.sp=mean(mean.sp))
-%    res$time <- t
-%    df2 <- rbind(df2, res)
-%}
-%inv.norm <- function(df) {
-%    df$inv.mfpt <- (max(df$mean.mfpt)-df$mean.mfpt) / (max(df$mean.mfpt)-
-%        min(df$mean.mfpt))
-%    df$inv.sp <- (max(df$mean.sp)-df$mean.sp) / (max(df$mean.sp)-
-%        min(df$mean.sp))
-%    #df$inv.mfpt <- (max(df$mfpt)-df$mfpt) / (max(df$mfpt)-min(df$mfpt))
-%    #df$inv.sp <- (max(df$sp)-df$sp) / (max(df$sp)-min(df$sp))
-%    df
-%}
-%df3 <- ddply(df2, .(time), inv.norm)
-%df4 <- ddply(df3, .(time), function(x) x[order(x$inv.mfpt,decreasing=T),])
-%#tpoint <- c(2,3,4,6,8,10,12,18,24)
-%df4 <- within(df4, time <- factor(time, 
-%    levels = paste(tpoint,'h')))
-%with(df4, levels(time))
-%df4$type <- '0'
-%df4$type[grep('EDA2R',df4$group)] <- '1'
-%df4$type[grep('IFNGR1',df4$group)] <- '2'
-%df4$type[grep('IFNAR2',df4$group)] <- '3'
-%#tmp <- ddply(df, .(group), 'nrow')
-%#df <- ddply(df, .(group), summarise, mean.mfpt=mean(mean.mfpt)) 
-%#    mean.sp=mean(mean.sp))
-%#df$size <- tmp$nrow
-%
-%#theme_set(theme_bw(10))
-%#print(ggplot(df4,aes(group,0,colour=type)) + #geom_point() +
-%#    scale_colour_manual(values=c('black','red','blue','green')) +
-%#    geom_segment(aes(xend=group,yend=inv.mfpt)) + coord_polar() +
-%#    facet_wrap(~time,scales='free_x') +
-%#    #geom_text(aes(label=V1),hjust=-0.2,alpha=0.3,size=2) +
-%#    xlab('') + 
-%#    #ylab('Normalized inverse MFPT') +
-%#    ylab('Normalized inverse shortest path') +
-%#    #ylim(0,1.1) #+
-%#    opts(axis.text.x=theme_text(size=4),legend.position='none')
-%#)
-%mfpt <- NULL
-%sp <- NULL
-%for (t in levels(mfpt.sp$tf)) {
-%    current <- subset(mfpt.sp, tf==t)
-%    mfpt.z <- Re((current$mfpt - median(current$mfpt)) / (IQR(current$mfpt)
-%        /(2*sqrt(2)*erfc(0.5))))
-%    sp.z <- Re((current$sp - median(current$sp)) / (IQR(current$sp)
-%        /(2*sqrt(2)*erfc(0.5))))
-%    mfpt <- cbind(mfpt, mfpt.z)
-%    sp <- cbind(sp, sp.z)
-%}
-%mfpt <- as.data.frame(mfpt)
-%names(mfpt) <- levels(mfpt.sp$tf)
-%mfpt$receptor <- current$receptor
-%mfpt$metric <- 'MFPT'
-%sp <- as.data.frame(sp)
-%names(sp) <- levels(mfpt.sp$tf)
-%sp$receptor <- current$receptor
-%sp$metric <- 'SP'
-%print(ggplot(rbind(mfpt,sp),aes(CEBPD,RELB)) + geom_point() +
-%    #scale_colour_manual(values=c('black','red','blue','green')) +
-%    #geom_segment(aes(xend=receptor,yend=mfpt.z)) + coord_polar() +
-%    #geom_bar() +
-%    facet_wrap(~metric,scales='free_x') +
-%    geom_text(aes(label=receptor),hjust=-0.2,alpha=0.3,size=2) +
-%    geom_abline(intercept=0,slope=1,colour='red',linetype='dashed') +
-%    xlab('CEBPD') + ylab('RELB') +
-%    #ylab('Normalized inverse MFPT') +
-%    #ylab('Normalized inverse shortest path') +
-%    xlim(-35,15) #+
-%    #opts(axis.text.x=theme_text(size=4),legend.position='none')
-%)
-%@
-%\caption{Example of the differential time series analysis using the 
-%full/reduced model fitting (Mar and Quackenbush \emph{PLoS Comput Biol} 2009). 
-%Gene expression time course from 2 conditions
-%are fitted with a cubic polynomial either together (reduced model, dot-dashed 
-%line) or separately (full model, dashed line). The deviances of the 2 model 
-%fits are compared using the ANOVA test and a $p\mhyphen$value is generated,
-%which compares the goodness-of-fit of both model fits and 
-%implies the probability that this gene is differentially expressed under
-%the 2 given conditions (equivalent to the alternative hypothesis that
-%the full model fits the data better).}
-%\label{fig:fit_ex}
-%\end{figure}
+dd.row <- as.dendrogram(hclust(dist(t(distance))))
+row.ord <- order.dendrogram(dd.row)
 
-% ----------------------------------------------------------------------------
-
-<<label=plot_tfbs,echo=False,fig=True,width=10,height=8,eval=False>>=
-#mycolor <- topo.colors(128)
+df <- distance[col.ord,row.ord]
+df$term <- rownames(df)
+df <- within(df, term <- factor(term, levels = rownames(df)))
+df <- melt(df)
 mycolor <- gray.colors(128,0.9,0)
-truncated <- sub('.*V\\$','',tfbs$common)
-df <- as.data.frame(tfbs$final[order(truncated),])
-names(df) <- paste(1:24,'h',sep='')
-df$TFBS <- tfbs$common[order(truncated)]
-df$group <- 'Other'
-df$group[grep('STAT',df$TFBS)] <- 'STAT'
-df$group[grep('NFK',df$TFBS)] <- 'NFKB'
-df$group[grep('RELA',df$TFBS)] <- 'NFKB'
-df$group[grep('CEBP',df$TFBS)] <- 'CEBP'
-df <- melt(df, id.vars=c('TFBS','group'))
-df <- within(df, TFBS <- factor(TFBS, levels = tfbs$common[order(truncated)]))
-with(df, levels(TFBS))
-df <- within(df, group <- factor(group, levels = c('NFKB','CEBP','STAT','Other')))
-with(df, levels(group))
-df$time <- rep(1:24, each=length(tfbs$common))
-print(ggplot(df,aes(variable,TFBS)) + geom_tile(aes(fill=-log10(value))) +
+print(ggplot(df,aes(term,variable)) + 
+    geom_tile(aes(fill=value)) +
     scale_fill_gradientn(colours=mycolor) +
-    guides(fill = guide_colorbar(barwidth = 0.5, barheight = 10, title.hjust=2.2,
-        title=expression(paste(-log[10],italic(p),'-value')))) +
-    labs(x = "",y = "") + scale_x_discrete(expand = c(0, 0)) +
+    guides(fill = guide_colorbar(barwidth = 0.5, barheight = 10, 
+        title.hjust=1.4, title.vjust=-0.1,
+        title='Bases to TSS')) +
+    labs(x = "",y = "", title=gene) + 
+    scale_x_discrete(expand = c(0, 0)) +
     scale_y_discrete(expand = c(0, 0)) +
-    opts(axis.ticks = theme_blank(),axis.text.x=theme_text(angle=90),
-        panel.border=theme_blank(),legend.title=theme_text(angle=90))
+    theme(axis.ticks = element_blank(),axis.text.x=element_text(angle=90,size=5),
+        axis.text.y=element_text(size=5),
+        panel.border=element_blank(),legend.title=element_text(angle=90))
+        #plot.margin=unit(c(0, 0, 0, 0), "cm"))
 )
-
-#print(ggplot(df,aes(time,-log10(value),group=TFBS)) + 
-#    geom_point() + geom_line() +
-#    facet_wrap(~group) +
-#    scale_colour_brewer('',palette='Set1') +
-#    xlab('time (h)') + ylab(expression(paste(-log[10],' ',italic(p),'-value'))) +
-#    opts(legend.position='none',legend.key=theme_blank(),
-#        title='Transcription factor target enrichment\n')
-#)
-
-@
-
-% ----------------------------------------------------------------------------
-
-<<label=pval,echo=False,fig=False,cache=True,eval=False>>=
-core <- cbind(ctrl[,-1],treated[,-1])
-pval <- apply(core,1,lrtest)
-qval <- p.adjust(pval, 'BH')
 @
 
 % ----------------------------------------------------------------------------

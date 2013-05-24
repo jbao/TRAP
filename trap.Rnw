@@ -42,6 +42,7 @@ library(Biostrings)
 library(org.Hs.eg.db)
 library(doMC)
 library(grid)
+library(igraph)
 library(devtools)
 load_all('~/tool/util')
 
@@ -218,10 +219,33 @@ df.uptime <- subset(df.uptime, phase!='other')
 
 % ----------------------------------------------------------------------------
 
+<<label=uptime_hist,echo=False,fig=True,eval=True>>=
+res <- hist(df.uptime$uptime, plot=F)
+df <- data.frame(x=res$mids, y=res$counts, type='q-value')
+
+print(ggplot(df,aes(x,y)) + 
+    geom_bar(stat='identity',fill='gray',colour='black') +
+    labs(x='Upregulation time (h)',y='Count',title='HDF + NHK-medium\n')
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=half_life,echo=False,fig=True,eval=True>>=
+half.life <- read.delim('~/data/Friedel2009/human_rna_half_life.csv', skip=1,
+    sep=';')
+df.uptime$half.life <- half.life$Half.life..min.[match(df.uptime$gene,
+    half.life$Gene.symbol)]
+print(ggplot(df.uptime,aes(uptime,half.life)) + geom_point())
+@
+
+% ----------------------------------------------------------------------------
+
 <<label=seq,echo=False,fig=False,eval=False>>=
 human.promoter <- read.DNAStringSet('~/data/fimo/human_upstream1000.fa')
-tf.entrez <- unlist(mget(as.character(df.uptime$gene), org.Hs.egSYMBOL2EG, 
-    ifnotfound=NA))
+tf.entrez <- unlist(mget('CCL5', org.Hs.egSYMBOL2EG, ifnotfound=NA))
+#tf.entrez <- unlist(mget(as.character(df.uptime$gene), org.Hs.egSYMBOL2EG, 
+#    ifnotfound=NA))
 tf.entrez <- tf.entrez[!is.na(tf.entrez)]
 tf.refseq <- unlist(mget(tf.entrez, org.Hs.egREFSEQ))
 tf.refseq <- tf.refseq[grep('NM',tf.refseq)]
@@ -237,7 +261,7 @@ refseq2symbol <- function(refseq.str) {
     else
         return(get(entrez, org.Hs.egSYMBOL))
 }
-wd <- '~/data/hdf/sig_seq/'
+wd <- '~/data/hdf/qpcr_seq/'
 for (i in 1:length(idx)) {
 #tmp <- foreach(i=1:length(idx), .combine='c') %dopar% {
     symbol <- refseq2symbol(names(human.promoter)[idx[i]])
@@ -252,7 +276,8 @@ for (i in 1:length(idx)) {
 % ----------------------------------------------------------------------------
 
 <<label=tf_scan,echo=False,fig=False,cache=False,eval=False>>=
-all.file <- dir(wd, 'fa')
+#all.file <- dir(wd, 'fa')
+all.file <- 'CCL5.fa'
 foreach(i=1:length(all.file)) %dopar% {
     seq.file <- paste(wd,all.file[i],sep='')
     res.file <- paste(wd,sub('fa','trap',all.file[i]),sep='')
@@ -301,8 +326,8 @@ foreach(i=1:length(all.file)) %dopar% {
 
 % ----------------------------------------------------------------------------
 
-<<label=tf_network,echo=False,fig=True,width=8,height=6,cache=True,eval=True>>=
-wd <- '~/data/hdf/sig_seq/'
+<<label=tf_network,echo=False,fig=True,width=7,height=7,cache=True,eval=True>>=
+wd <- '~/data/hdf/tf_seq/'
 #tf.symbol <- 'IRF_|IRF7|CEBPD|EMX2|MEF2D|NFE2|NFK|RELB|RUNX1|STAT[134]'
 tf.symbol <- 'V\\$'
 idx <- grep(tf.symbol, gev.param$X.matrix)
@@ -310,7 +335,7 @@ L <- 1000
 all <- NULL
 all.file <- dir(wd,'trap')
 #for (i in 1:length(all.file)) {
-all <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
+all.sig <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
 #all <- foreach(idx=1:2, .combine='rbind') %dopar% {
     res <- read.delim(paste(wd,all.file[ii],sep=''), header=F)
     df <- subset(res, V1 %in% gev.param$X.matrix[idx])
@@ -320,7 +345,7 @@ all <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
     df$mu <- gev.param$mu0[idx] + gev.param$mu1[idx]*log10(L)
     df$pval <- rep(0,nrow(df))
     for (i in 1:nrow(df)) {
-        df$pval[i] <- pgev(log10(df$V3[i]), loc=df$mu[i], scale=df$sig[i],
+        df$pval[i] <- pgev(log10(df$V2[i]), loc=df$mu[i], scale=df$sig[i],
             shape=df$xi[i], lower.tail=F)
     }
     df$gene <- sub('.trap', '', all.file[ii])
@@ -337,8 +362,28 @@ all <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
 
 motif2symbol <- read.delim('~/data/TRANSFAC/Motif_Symbol.txt') 
 motif2symbol$tid <- sub('M[0-9]+_','',motif2symbol$Motif)
-all$phase <- df.uptime$phase[match(all$gene, df.uptime$gene)]
-all$tf <- motif2symbol$Symbol[match(all$V1, motif2symbol$tid)]
+all.sig$phase <- df.uptime$phase[match(all.sig$gene, df.uptime$gene)]
+all.sig$tf <- motif2symbol$Symbol[match(all.sig$V1, motif2symbol$tid)]
+
+unique.tf <- unique(all.sig$gene)
+all.tf <- subset(all.sig, tf %in% unique.tf & gene %in% ctrl$Gene & pval != 0)
+all.tf$affinity <- -log10(all.tf$pval)
+
+res <- hist(all.tf$affinity, plot=F)
+df <- data.frame(x=res$mids, y=res$counts, type='q-value')
+
+print(ggplot(df,aes(x,y)) + 
+    geom_bar(stat='identity',fill='gray',colour='black') +
+    labs(x='Affinity',y='Count',title='Connection weights in TF network\n')
+)
+
+#net <- graph.data.frame(all.tf[all.tf$affinity>2,c('tf','gene','affinity')], directed=T)
+#V(net)$label <- V(net)$name
+#V(net)$size <- degree(net)
+#V(net)$style <- 'filled'
+#pdf('~/data/hdf/hdf-tf_network.pdf')
+#plot(net, layout=layout.fruchterman.reingold)
+#dev.off()
 
 #pdf('~/data/hdf/hdf-tf_scan.pdf',8,11)
 #unique.matrix <- levels(factor(all$V1))
@@ -383,7 +428,86 @@ all$tf <- motif2symbol$Symbol[match(all$V1, motif2symbol$tid)]
 
 % ----------------------------------------------------------------------------
 
-<<label=ttest,echo=False,fig=True,eval=True>>=
+<<label=tf_ts,echo=False,fig=True,eval=True>>=
+ctrl <- read.delim('~/data/hdf/hdf_ctrl_16091.tsv')
+treated <- read.delim('~/data/hdf/hdf_nhk_16091.tsv')
+diff <- read.delim('~/data/hdf/hdf_diff_16091.tsv')
+ctrl.tpoint <- c(0,2,4,8,12,24)
+treated.tpoint <- c(0,1,2,3,4,6,8,10,12,18,24)
+tf <- read.delim('~/data/tf/tf_table_final.csv', sep=';')
+
+idx <- na.omit(match(tf$Gene_Abbrev,treated$Gene))
+##stop()
+core <- cbind(ctrl[idx,-1], treated[idx,-1])
+pval <- apply(core,1,lrtest,ctrl.tpoint,treated.tpoint)
+qval <- p.adjust(pval, 'BH')
+diff <- rowMeans(diff[idx,-1])
+df <- data.frame(qval=qval,gene=ctrl$Gene[idx],diff=diff)
+# interpolation
+treated.interpol <- t(apply(treated[,-1],1,function(x)
+    spline(treated.tpoint,x,n=25,xmin=0,xmax=24)$y))
+ctrl.interpol <- t(apply(ctrl[,-1],1,function(x)
+    spline(ctrl.tpoint,x,n=25,xmin=0,xmax=24)$y))
+treated.interpol <- as.data.frame(treated.interpol)
+names(treated.interpol) <- 0:24
+treated.interpol$Gene <- treated$Gene
+ctrl.interpol <- as.data.frame(ctrl.interpol)
+names(ctrl.interpol) <- 0:24
+ctrl.interpol$Gene <- ctrl$Gene
+
+#tf.sig <- unique(df$gene[df$diff>0&df$qval<0.05])
+tf.sig <- unique.tf[unique.tf %in% ctrl$Gene]
+#tf.sig <- c('CEBPD','STAT1','IRF7','KCNIP3')
+tf.ctrl <- list(dat=ctrl.interpol[match(tf.sig,ctrl$Gene),], cond='Control', 
+    tpoint=0:24)
+tf.treated <- list(dat=treated.interpol[match(tf.sig,treated$Gene),], cond='NHK', 
+    tpoint=0:24)
+tf.ctrl.original <- list(dat=ctrl[match(tf.sig,ctrl$Gene),], cond='Control', 
+    tpoint=ctrl.tpoint)
+tf.treated.original <- list(dat=treated[match(tf.sig,treated$Gene),], cond='NHK', 
+    tpoint=treated.tpoint)
+#df <- plot.full.reduced.interval(tf.ctrl, tf.treated, 
+#    '~/data/hdf/hdf-tf_full_reduced_interval.pdf', c(0,4,8,12,16,20,24))
+# get the p-value
+idx.ctrl <- which(names(tf.ctrl$dat)=='Gene')
+idx.treated <- which(names(tf.treated$dat)=='Gene')
+core <- cbind(tf.ctrl$dat[,-idx.ctrl],tf.treated$dat[,-idx.treated])
+interval.marker <- c(0,4,8,12,16,20,24)
+param <- apply(core,1,function(x) lrtest.interval(x,tf.ctrl$tpoint,
+    tf.treated$tpoint,interval.marker))
+df.param <- melt(param)
+df.param$x <- rep(interval.marker[1:(length(interval.marker)-1)], 
+    nrow(tf.ctrl$dat))
+df.param$xend <- rep(interval.marker[-1], nrow(tf.ctrl$dat))
+df.param$Gene <- rep(tf.ctrl$dat$Gene, each=length(interval.marker)-1)
+df.param <- subset(df.param, value<0.01)
+df.param$window <- 0
+df.param$window[df.param$x==0] <- 1
+df.param$window[df.param$x==4] <- 2
+df.param$window[df.param$x==8] <- 3
+df.param$window[df.param$x==12] <- 4
+df.param$window[df.param$x==16] <- 5
+df.param$window[df.param$x==20] <- 6
+#plot.full.reduced.interval.example(tf.ctrl.original, tf.treated.original, 
+#    df.param)
+
+#for (i in 1:6) {
+#    V(net)$fillcolor <- ifelse(V(net)$name %in% df.param$Gene[df.param$window==i], "red", "lightblue")
+#    write.graph(net, paste('/home/jbao/data/hdf/hdf-tf_network_window',i,'.dot',sep=''), 'dot')
+#}
+df.window <- ddply(df.param, .(window), nrow)
+df.window$label <- c('0-4h','4-8h','8-12h','12-16h','16-20h','20-24h')
+df.window$label <- factor(df.window$label, levels=df.window$label)
+print(ggplot(df.window,aes(label,V1,width=0.6)) + 
+    geom_bar(stat='identity',fill='gray',colour='black') +
+    labs(x='',y='# differentially regulated TFs',title='\n') +
+    theme(axis.text.x=element_text(angle=45))
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=ttest,echo=False,fig=True,width=7,height=7,eval=True>>=
 # t-test of sitar scores between early and late genes
 pval.early.late <- function(df, type) {
     df.early <- subset(df, phase=='early')
@@ -410,23 +534,41 @@ pval.early.late <- function(df, type) {
 #    if (length(score.early)>1 & length(score.late)>1)
 #        t.test(-log10(score.early),-log10(score.late))$statistic
 #}
-all <- subset(all, !is.na(tf))
-tstat <- ddply(all, .(tf), function(x) pval.early.late(x,'stat'))
-pval <- ddply(all, .(tf), function(x) pval.early.late(x,'pval'))
+all.sig <- subset(all.sig, !is.na(tf))
+tstat <- ddply(all.sig, .(tf), function(x) pval.early.late(x,'stat'))
+pval <- ddply(all.sig, .(tf), function(x) pval.early.late(x,'pval'))
 df.t <- merge(tstat, pval)
 df.t$uptime <- uptime[match(df.t$tf, ctrl$Gene)]
 df.t$tf.diff.qval <- qval[match(df.t$tf, ctrl$Gene)]
+df.t$label <- sprintf("p==%.1e",df.t$V1)
 
-print(ggplot(df.t,aes(abs(t),-log10(tf.diff.qval))) + geom_point() +
-    geom_text(aes(label=tf),size=3,hjust=-0.2) 
-)
+#df <- subset(all.sig, tf=='NFKB1'|tf=='ETS1')
+#df.label <- subset(df.t, tf=='NFKB1'|tf=='ETS1')
+#df$affinity <- -log10(df$pval)
+##plot(affinity~as.factor(phase), data=df)
+#print(ggplot(df,aes(phase,affinity)) + geom_boxplot() +
+#    facet_wrap(~tf) +
+#    geom_text(data=df.label,aes(x=1.2,y=3.5,label=label),size=5,hjust=0,parse=T) 
+#)
 #print(ggplot(df.t,aes(uptime,t)) + geom_point(aes(size=-log10(V1))) +
-#    geom_text(data=subset(df.t,V1<0.2),aes(label=tf),size=3,hjust=-0.2) +
+#    geom_text(data=subset(df.t,V1<0.2),aes(label=tf),size=4,hjust=-0.3) +
 #    guides(size=guide_legend(title=expression(paste(-log[10]~'p-value')))) +
-#    xlim(0,15) + labs(title='Affinity\n') +
+#    xlim(0,15) + 
+#    labs(x='Upregulation time (h)',y='t-statistic',
+#        title='Early/late-specific TFs\n') +
 #    theme(legend.position=c(0.85,0.85),legend.key=element_blank(),
 #        legend.background=element_blank()) 
 #)
+print(ggplot(df.t,aes(abs(t),-log10(tf.diff.qval))) + 
+    geom_point() +
+    geom_text(data=subset(df.t,V1<0.1|tf.diff.qval<0.05),aes(label=tf),size=4,hjust=-0.3) +
+    #guides(size=guide_legend(title=expression(paste(-log[10]~'p-value')))) +
+    xlim(0,3.5) + 
+    labs(x='Absolute t-statistic',y='Differential regulation',
+        title='TF specificity and mRNA regulation\n') +
+    theme(legend.position=c(0.85,0.85),legend.key=element_blank(),
+        legend.background=element_blank()) 
+)
 
 #df <- merge(df.t, sitar.res)
 #names(df) <- c('tf','t','ttest.pval','tf.uptime','gene','score','gene.phase')
@@ -436,9 +578,18 @@ print(ggplot(df.t,aes(abs(t),-log10(tf.diff.qval))) + geom_point() +
 
 % ----------------------------------------------------------------------------
 
+<<label=specific_tf,echo=False,fig=False,eval=False>>=
+df.t$type <- 'other'
+df.t$type[df.t$V1<0.2&df.t$t<0&df.t$uptime>5] <- 'late specific'
+df.t$type[df.t$V1<0.2&df.t$t>0&df.t$uptime<=5] <- 'early specific'
+motif2symbol$type <- df.t$type[match(motif2symbol$Symbol,df.t$tf)]
+@
+
+% ----------------------------------------------------------------------------
+
 <<label=profile,echo=False,fig=True,eval=False>>=
-trap <- read.delim('~/data/hdf/qpcr_seq/IL6.trap', header=F)
-res <- trap[grep('CEBPB_Q6$|NFKB_Q6$',trap$V1),]
+trap <- read.delim('~/data/hdf/qpcr_seq/SAA1.trap', header=F)
+res <- trap[grep('CEBPD_Q6$|NFKB_Q6$',trap$V1),]
 #res <- res[grep('CEBPD|NFKB_Q6$',res$V1),]
 df <- NULL
 for (i in 1:nrow(res)) {
@@ -472,7 +623,7 @@ print(ggplot(df,aes(pos-1001,affinity,colour=matrix)) + geom_line() +
 
 % ----------------------------------------------------------------------------
 
-<<label=compel_data,echo=False,fig=False,cache=True,eval=False>>=
+<<label=compel_data,echo=False,fig=False,cache=True,eval=True>>=
 tf.symbol <- 'V\\$'
 idx <- grep(tf.symbol, gev.param$X.matrix)
 L <- 1000
@@ -504,29 +655,59 @@ all <- foreach(ii=1:length(all.file), .combine='rbind') %dopar% {
     #all <- rbind(all, df)
     df[,c('V1','pos','pval','gene')]
 }
+all.file <- NULL
 @
 
 % ----------------------------------------------------------------------------
 
-<<label=compel,echo=False,fig=False,eval=False>>=
-pdf('~/data/TRANSFAC/compel/compel_affinity.pdf',8,11)
-unique.gene <- levels(factor(all$gene))
-for (i in 1:ceiling(length(unique.gene)/12)) {
-    slice <- seq((i-1)*12+1,i*12)
-    slice <- slice[!(slice > length(unique.gene))]
-    current <- subset(all, gene %in% unique.gene[slice])
-    current <- current[current$pval!=0&current$pos>900,]
-    print(ggplot(current,aes(pos-1001,-log10(pval))) + geom_point() +
-        geom_text(data=subset(current,pval<0.05),aes(label=V1),size=1.5,vjust=-1,hjust=0.5) +
-        facet_wrap(~gene,ncol=3,scales='free_y') +
-        #xlim(-100,0) +
-        labs(x='Bases relative to TSS',y='Affinity') 
-        #    title='Affinity profile of CXCL1 promoter region\n') +
-        #theme(legend.position='none',legend.key=element_blank(),
-        #    legend.background=element_blank())
-    )
-}
-dev.off()
+<<label=peak,echo=False,fig=True,width=10,height=2,eval=False>>=
+df <- subset(all, gene=='SAA1'&pval!=0)
+
+print(ggplot(df,aes(pos-1001,-log10(pval))) + geom_point() +
+    geom_text(data=subset(df,pval<0.05),aes(label=V1),size=1.5,vjust=-1,hjust=0.5) +
+    ylim(0,5.5) +#xlim(-100,0) +
+    labs(x='Bases relative to TSS',y='Affinity') 
+)
+@
+
+% ----------------------------------------------------------------------------
+
+<<label=compel,echo=False,fig=True,eval=True>>=
+all$type <- motif2symbol$type[match(all$V1,motif2symbol$tid)]
+goi <- c('IL8','CXCL1','CXCL2')
+all <- subset(all,pval<0.01&pval!=0&gene %in% goi)
+#pdf('~/data/hdf/hdf_qpcr_affinity.pdf',8,11)
+#unique.gene <- levels(factor(all$gene))
+#for (i in 1:ceiling(length(unique.gene)/12)) {
+#    slice <- seq((i-1)*12+1,i*12)
+#    slice <- slice[!(slice > length(unique.gene))]
+#    current <- subset(all, gene %in% unique.gene[slice])
+#    current <- current[current$pval!=0&current$pval<0.01&current$pos>500,]
+#    #current <- current[current$pval!=0,]
+#    print(ggplot(current,aes(pos-1001,-log10(pval))) + 
+#        geom_point() +
+#        scale_colour_brewer(palette='Set1') +
+#        geom_text(aes(label=V1),size=1.5,vjust=-1,hjust=0.5) +
+#        facet_wrap(~gene,ncol=3,scales='free_y') +
+#        #xlim(-100,0) +
+#        labs(x='Bases relative to TSS',y='Affinity') +
+#        #    title='Affinity profile of CXCL1 promoter region\n') +
+#        theme(legend.position=c(0.9,0.9),legend.key=element_blank(),
+#            legend.background=element_blank())
+#    )
+#}
+#dev.off()
+print(ggplot(all,aes(pos-1001,-log10(pval))) + 
+    geom_point() +
+    scale_colour_brewer(palette='Set1') +
+    geom_text(aes(label=V1),size=1.5,vjust=-1,hjust=0.5) +
+    facet_wrap(~gene,ncol=1) +
+    #xlim(-100,0) +
+    labs(x='Bases relative to TSS',y='Affinity') +
+    #    title='Affinity profile of CXCL1 promoter region\n') +
+    theme(legend.position=c(0.9,0.9),legend.key=element_blank(),
+        legend.background=element_blank())
+)
 @
 
 % ----------------------------------------------------------------------------
